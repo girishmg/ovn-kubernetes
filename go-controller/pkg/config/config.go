@@ -787,9 +787,13 @@ func (a *OvnDBAuth) GetURL() string {
 	return a.OvnAddressForClient
 }
 
-// SetDBAuth sets the authentication configuration and connection method
-// for the OVN northbound or southbound database server or client
-func (a *OvnDBAuth) SetDBAuth() error {
+// SetDBClientAuth sets the authentication configuration and connection method
+// for the OVN northbound or southbound database client
+func (a *OvnDBAuth) SetDBClientAuth() error {
+	if a.server {
+		// This is not a client auth
+		return fmt.Errorf("incorrect auth type, client auth expected")
+	}
 	if a.Scheme == OvnDBSchemeUnix {
 		// Nothing to do
 		return nil
@@ -803,59 +807,95 @@ func (a *OvnDBAuth) SetDBAuth() error {
 		}
 	}
 
-	if a.server {
-		// Set the database connection method. Also set the inactivity_probe
-		// to zero as a server need not try to maintain connections to the
-		// client via OVSDB echo request/responses on top of a TCP connection.
-		out, err := rawExec(a.exec, a.ctlCmd, "set-connection", a.GetURL(),
-			"--", "set", "connection", ".", "inactivity_probe=0")
-		if err != nil {
-			return fmt.Errorf("error setting %s API connection: %v\n  %q", a.ctlCmd, err, out)
-		}
-
-		if a.Scheme == OvnDBSchemeSSL {
-			// Server auth requires CA certificate to exist
-			if !pathExists(a.CACert) {
-				return fmt.Errorf("server CA certificate file %s not found", a.CACert)
-			}
-			// Tell the database what SSL keys and certs to use, but before that delete
-			// any SSL configuration. Otherwise, ovn-{nbctl|sbctl} set-ssl command will hang
-			out, err = rawExec(a.exec, a.ctlCmd, "del-ssl")
-			if err != nil {
-				return fmt.Errorf("error deleting %s SSL configuration: %v\n %q", a.ctlCmd, err, out)
-			}
-			out, err = rawExec(a.exec, a.ctlCmd, "set-ssl", a.PrivKey, a.Cert, a.CACert)
-			if err != nil {
-				return fmt.Errorf("error setting %s SSL API certificates: %v\n  %q", a.ctlCmd, err, out)
-			}
-		}
-	} else {
-		if a.Scheme == OvnDBSchemeSSL {
-			// Client can bootstrap the CA cert from the DB
-			if err := a.ensureCACert(); err != nil {
-				return err
-			}
-
-			// Tell Southbound DB clients (like ovn-controller)
-			// which certificates to use to talk to the DB.
-			// Must happen *before* setting the "ovn-remote"
-			// external-id.
-			if a.ctlCmd == "ovn-sbctl" {
-				out, err := runOVSVsctl(a.exec, "del-ssl")
-				if err != nil {
-					return fmt.Errorf("error deleting ovs-vsctl SSL "+
-						"configuration: %q (%v)", out, err)
-				}
-
-				out, err = runOVSVsctl(a.exec, "set-ssl", a.PrivKey, a.Cert, a.CACert)
-				if err != nil {
-					return fmt.Errorf("error setting client southbound DB SSL options: %v\n  %q", err, out)
-				}
-			}
-		}
-
-		if err := setOVSExternalID(a.exec, a.externalID, "\""+a.GetURL()+"\""); err != nil {
+	if a.Scheme == OvnDBSchemeSSL {
+		// Client can bootstrap the CA cert from the DB
+		if err := a.ensureCACert(); err != nil {
 			return err
+		}
+
+		// Tell Southbound DB clients (like ovn-controller)
+		// which certificates to use to talk to the DB.
+		// Must happen *before* setting the "ovn-remote"
+		// external-id.
+		if a.ctlCmd == "ovn-sbctl" {
+			out, err := runOVSVsctl(a.exec, "del-ssl")
+			if err != nil {
+				return fmt.Errorf("error deleting ovs-vsctl SSL "+
+					"configuration: %q (%v)", out, err)
+			}
+
+			out, err = runOVSVsctl(a.exec, "set-ssl", a.PrivKey, a.Cert, a.CACert)
+			if err != nil {
+				return fmt.Errorf("error setting client southbound DB SSL options: %v\n  %q", err, out)
+			}
+		}
+	}
+
+	if err := setOVSExternalID(a.exec, a.externalID, "\""+a.GetURL()+"\""); err != nil {
+		return err
+	}
+	return nil
+}
+
+// SetDBServerAuth sets the authentication configuration and connection method
+// for the OVN northbound or southbound database server
+func (a *OvnDBAuth) SetDBServerAuth(clientAuthURL string) error {
+	var err error
+	var out string
+
+	if !a.server {
+		// This is not a server auth
+		return fmt.Errorf("incorrect auth type, server auth expected")
+	}
+	if a.Scheme == OvnDBSchemeUnix {
+		// Nothing to do
+		return nil
+	} else if a.Scheme == OvnDBSchemeSSL {
+		// Both server and client SSL schemes require privkey and cert
+		if !pathExists(a.PrivKey) {
+			return fmt.Errorf("private key file %s not found", a.PrivKey)
+		}
+		if !pathExists(a.Cert) {
+			return fmt.Errorf("certificate file %s not found", a.Cert)
+		}
+	}
+
+	// If ovnkube-db is running on the other nodes other than ovn master
+	// node, connection needs to be opened up on the ovnkube-db node locally,
+	// In that case, set-connection is unnecessary then, but we keep it
+	// for other cases, and inactivity_probe still needs to be set.
+	// SSL is already broken, we will need to work on it once we support
+	// SSL node in the daemonset mode
+	//
+	// Set the database connection method. Also set the inactivity_probe
+	// to zero as a server need not try to maintain connections to the
+	// client via OVSDB echo request/responses on top of a TCP connection.
+	if clientAuthURL != "" {
+		db := fmt.Sprintf("--db=%s", clientAuthURL)
+		out, err = rawExec(a.exec, a.ctlCmd, db, "set-connection",
+			a.GetURL(), "--", "set", "connection", ".", "inactivity_probe=0")
+	} else {
+		out, err = rawExec(a.exec, a.ctlCmd, "set-connection",
+			a.GetURL(), "--", "set", "connection", ".", "inactivity_probe=0")
+	}
+	if err != nil {
+		return fmt.Errorf("error setting %s API connection: %v\n  %q", a.ctlCmd, err, out)
+	}
+
+	if a.Scheme == OvnDBSchemeSSL {
+		// Server auth requires CA certificate to exist
+		if !pathExists(a.CACert) {
+			return fmt.Errorf("server CA certificate file %s not found", a.CACert)
+		}
+		// Tell the database what SSL keys and certs to use, but before that delete
+		// any SSL configuration. Otherwise, ovn-{nbctl|sbctl} set-ssl command will hang
+		out, err = rawExec(a.exec, a.ctlCmd, "del-ssl")
+		if err != nil {
+			return fmt.Errorf("error deleting %s SSL configuration: %v\n %q", a.ctlCmd, err, out)
+		}
+		out, err = rawExec(a.exec, a.ctlCmd, "set-ssl", a.PrivKey, a.Cert, a.CACert)
+		if err != nil {
+			return fmt.Errorf("error setting %s SSL API certificates: %v\n  %q", a.ctlCmd, err, out)
 		}
 	}
 	return nil

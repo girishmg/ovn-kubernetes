@@ -95,7 +95,7 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	return err
 }
 
-// If default namespace MasterOverlayIP annotation has been chaged, update
+// If default namespace MasterOverlayIP annotation has been changed, update
 // config.OvnNorth and config.OvnSouth auth with new ovn-nb and ovn-remote
 // IP address
 func (cluster *OvnClusterController) updateOvnNode(masterIP string,

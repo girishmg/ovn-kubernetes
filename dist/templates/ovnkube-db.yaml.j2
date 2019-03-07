@@ -1,23 +1,23 @@
-# ovnkube-master
+# ovnkube-db
 # daemonset version 3
-# starts master daemons, each in a separate container
-# it is run on the master node(s)
+# starts ovn NB/SB ovsdb daemons, each in a separate container
+# it is running on master node for now, but does not need to be the case
 kind: Deployment
 apiVersion: apps/v1
 metadata:
-  name: ovnkube-master
+  name: ovnkube-db
   # namespace set up by install
   namespace: ovn-kubernetes
   annotations:
     kubernetes.io/description: |
-      This daemonset launches the ovn-kubernetes networking components.
+      This daemonset launches the OVN NB/SB ovsdb service components.
 spec:
   progressDeadlineSeconds: 600
   replicas: 1
   revisionHistoryLimit: 10
   selector:
     matchLabels:
-      name: ovnkube-master
+      name: ovnkube-db
   strategy:
     rollingUpdate:
       maxSurge: 25%
@@ -26,7 +26,7 @@ spec:
   template:
     metadata:
       labels:
-        name: ovnkube-master
+        name: ovnkube-db
         component: network
         type: infra
         openshift.io/component: network
@@ -46,12 +46,12 @@ spec:
       # ovs flow for ovn (geneve)
       # /usr/share/openvswitch/scripts/ovs-ctl --protocol=udp --dport=6081 enable-protocol
 
-      # run-ovn-northd - v3
-      - name: run-ovn-northd
+      # nb-ovsdb - v3
+      - name: nb-ovsdb
         image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
         imagePullPolicy: "{{ ovn_image_pull_policy | default('IfNotPresent') }}"
 
-        command: ["/root/ovnkube.sh", "run-ovn-northd"]
+        command: ["/root/ovnkube.sh", "nb-ovsdb"]
 
         securityContext:
           runAsUser: 0
@@ -102,8 +102,8 @@ spec:
         env:
         - name: OVN_DAEMONSET_VERSION
           value: "3"
-        - name: OVN_LOG_NORTHD
-          value: "-vconsole:info"
+        - name: OVN_LOG_NB
+          value: "-vconsole:info -vfile:info"
         - name: OVN_NET_CIDR
           valueFrom:
             configMapKeyRef:
@@ -125,23 +125,24 @@ spec:
               fieldPath: spec.nodeName
         ports:
         - name: healthz
-          containerPort: 10257
+          containerPort: 10256
         # TODO: Temporarily disabled until we determine how to wait for clean default
         # config
         # livenessProbe:
         #   initialDelaySeconds: 10
         #   httpGet:
         #     path: /healthz
-        #     port: 10257
+        #     port: 10256
         #     scheme: HTTP
         lifecycle:
       # end of container
 
-      - name: ovnkube-master
+      # sb-ovsdb - v3
+      - name: sb-ovsdb
         image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
         imagePullPolicy: "{{ ovn_image_pull_policy | default('IfNotPresent') }}"
 
-        command: ["/root/ovnkube.sh", "ovn-master"]
+        command: ["/root/ovnkube.sh", "sb-ovsdb"]
 
         securityContext:
           runAsUser: 0
@@ -168,8 +169,6 @@ spec:
           name: host-var-lib-ovs
         - mountPath: /var/log/openvswitch/
           name: host-var-log-ovs
-        - mountPath: /var/log/ovn-kubernetes/
-          name: host-var-log-ovnkube
         - mountPath: /var/run/openvswitch/
           name: host-var-run-ovs
        #  readOnly: false
@@ -194,10 +193,8 @@ spec:
         env:
         - name: OVN_DAEMONSET_VERSION
           value: "3"
-        - name: OVN_MASTER
-          value: "true"
-        - name: OVNKUBE_LOGLEVEL
-          value: "4"
+        - name: OVN_LOG_SB
+          value: "-vconsole:info -vfile:info"
         - name: OVN_NET_CIDR
           valueFrom:
             configMapKeyRef:
@@ -219,14 +216,14 @@ spec:
               fieldPath: spec.nodeName
         ports:
         - name: healthz
-          containerPort: 10254
+          containerPort: 10255
         # TODO: Temporarily disabled until we determine how to wait for clean default
         # config
         # livenessProbe:
         #   initialDelaySeconds: 10
         #   httpGet:
         #     path: /healthz
-        #     port: 10254
+        #     port: 10255
         #     scheme: HTTP
         lifecycle:
       # end of container

@@ -63,7 +63,7 @@ func setupOVNNode(nodeName string) error {
 	for _, auth := range []*config.OvnDBAuth{
 		config.OvnNorth.ClientAuth,
 		config.OvnSouth.ClientAuth} {
-		if err := auth.SetDBAuth(); err != nil {
+		if err := auth.SetDBClientAuth(); err != nil {
 			return err
 		}
 	}
@@ -99,13 +99,15 @@ func setupOVNNode(nodeName string) error {
 func setupOVNMaster(nodeName string) error {
 	// Configure both server and client of OVN databases, since master uses both
 	for _, auth := range []*config.OvnDBAuth{
-		config.OvnNorth.ServerAuth,
 		config.OvnNorth.ClientAuth,
-		config.OvnSouth.ServerAuth,
 		config.OvnSouth.ClientAuth} {
-		if err := auth.SetDBAuth(); err != nil {
+		if err := auth.SetDBClientAuth(); err != nil {
 			return err
 		}
 	}
-	return nil
+	if err := config.OvnNorth.ServerAuth.SetDBServerAuth(config.OvnNorth.ClientAuth.GetURL()); err != nil {
+		return err
+	}
+	err := config.OvnSouth.ServerAuth.SetDBServerAuth(config.OvnSouth.ClientAuth.GetURL())
+	return err
 }
