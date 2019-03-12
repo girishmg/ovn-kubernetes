@@ -150,8 +150,8 @@ wait_for_event () {
 # ovn-master must be up before ovn-node comes up
 # This wait for the ovn-master to be up
 ovn_master_ready () {
-  running_ovn_master_pods=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} get --no-headers pods -n ovn-kubernetes -l app=ovnkube-master --field-selector=status.phase=Running 2>/dev/null | wc -l)
-  if [[ $(running_ovn_master_pods) == 0 ]] ; then
+  running_ovn_master_pods=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} get --no-headers pods -n ovn-kubernetes -l name=ovnkube-master --field-selector=status.phase=Running 2>/dev/null | wc -l)
+  if [[ ${running_ovn_master_pods} == 0 ]] ; then
     return 1
   fi
   return 0
@@ -321,10 +321,10 @@ ovn_debug () {
   ovn-nbctl --db=${ovn_nbdb_test} show
   echo " "
   echo "=========== ovn-nbctl list ACL ============="
-  ovn-nbctl list ACL
+  ovn-nbctl --db=${ovn_nbdb_test} list ACL
   echo " "
   echo "=========== ovn-nbctl list address_set ============="
-  ovn-nbctl list address_set
+  ovn-nbctl --db=${ovn_nbdb_test} list address_set
   echo " "
   echo "=========== ovs-vsctl show ============="
   ovs-vsctl show
@@ -631,13 +631,13 @@ ovn-node () {
   echo "=============== ovn-node - (wait for ovs)"
   wait_for_event ovs_ready
 
-  echo "=============== ovn-node - (wait for ovn_master)"
-  # ovn-node must wait for ovn-master to be up
-  wait_for_event ovn_master_ready
-
   echo "=============== ovn-node - (wait for ovn_db_ready)"
   wait_for_event ovn_db_ready
   echo "ovn_nbdb ${ovn_nbdb}   ovn_sbdb ${ovn_sbdb}  ovn_nbdb_test ${ovn_nbdb_test}" 
+
+  echo "=============== ovn-node - (wait for ovn_master)"
+  # ovn-node must wait for ovn-master to be up
+  wait_for_event ovn_master_ready
 
   echo "=============== ovn-node - (ovn-node  wait for ovn-controller.pid)"
   wait_for_event pid_ready ovn-controller.pid
