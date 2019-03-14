@@ -155,16 +155,18 @@ wait_for_event () {
 # This waits for ovnkube-db POD to come up
 ready_to_start_node () {
 
-  # See if ep is available ...
-  ovn_db_host=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
-    get ep -n ovn-kubernetes ovnkube-db 2>/dev/null | grep 6642 | sed 's/:/ /' | awk '/ovnkube-db/{ print $2 }')
-  if [[ ${ovn_db_host} == "" ]] ; then
+  if [[ ${ovn_daemonset_version} == "3" ]] ; then
+    # See if ep is available ...
+    ovn_db_host=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
+      get ep -n ovn-kubernetes ovnkube-db 2>/dev/null | grep 6642 | sed 's/:/ /' | awk '/ovnkube-db/{ print $2 }')
+    if [[ ${ovn_db_host} == "" ]] ; then
       return 1
+    fi
   fi
   get_ovn_db_vars
   ovn-nbctl --db=${ovn_nbdb_test} show > /dev/null 2>&1
   if [[ $? != 0 ]] ; then
-      return 1
+    return 1
   fi
   return 0
 }
@@ -567,10 +569,26 @@ ovn-northd () {
     mkdir -p /var/lib/openvswitch
     # ovn-northd - master node only
 
+    get_ovn_db_vars
     echo "OVN_NORTH=${ovn_nbdb}  OVN_SOUTH=${ovn_sbdb} ovn_northd_opts=${ovn_northd_opts}"
     /usr/share/openvswitch/scripts/ovn-ctl start_northd \
       --db-nb-addr=${ovn_nbdb} --db-sb-addr=${ovn_sbdb} \
       ${ovn_northd_opts}
+
+    wait_for_event pid_ready ovn-northd.pid
+    echo "=============== ovn_northd ========== RUNNING"
+    sleep 1
+
+    iptables-rules 6641
+    iptables-rules 6642
+    ovn-nbctl set-connection ptcp:6641 -- set connection . inactivity_probe=0
+    ovn-sbctl set-connection ptcp:6642 -- set connection . inactivity_probe=0
+
+    tail --follow=name /var/log/openvswitch/ovn-northd.log &
+    ovn_tail_pid=$!
+
+    pid_health /var/run/openvswitch/ovn-northd.pid ${ovn_tail_pid}
+
     echo "=============== ovn-northd ========== FAILED"
     cat /var/log/openvswitch/ovn-northd.log
     exit 4
