@@ -80,20 +80,6 @@ spec:
           name: host-var-log-ovs
         - mountPath: /var/run/openvswitch/
           name: host-var-run-ovs
-       #  readOnly: false
-        - mountPath: /var/run/kubernetes/
-          name: host-var-run-kubernetes
-          readOnly: true
-        # We mount our socket here
-        - mountPath: /var/run/ovn-kubernetes
-          name: host-var-run-ovn-kubernetes
-        # CNI related mounts which we take over
-        - mountPath: /host/opt/cni/bin
-          name: host-opt-cni-bin
-        - mountPath: /etc/cni/net.d
-          name: host-etc-cni-netd
-        - mountPath: /var/lib/cni/networks/ovn-k8s-cni-overlay
-          name: host-var-lib-cni-networks-ovn-kubernetes
 
         resources:
           requests:
@@ -104,16 +90,6 @@ spec:
           value: "3"
         - name: OVN_LOG_NB
           value: "-vconsole:info -vfile:info"
-        - name: OVN_NET_CIDR
-          valueFrom:
-            configMapKeyRef:
-              name: ovn-config
-              key: net_cidr
-        - name: OVN_SVC_CIDR
-          valueFrom:
-            configMapKeyRef:
-              name: ovn-config
-              key: svc_cidr
         - name: K8S_APISERVER
           valueFrom:
             configMapKeyRef:
@@ -171,20 +147,6 @@ spec:
           name: host-var-log-ovs
         - mountPath: /var/run/openvswitch/
           name: host-var-run-ovs
-       #  readOnly: false
-        - mountPath: /var/run/kubernetes/
-          name: host-var-run-kubernetes
-          readOnly: true
-        # We mount our socket here
-        - mountPath: /var/run/ovn-kubernetes
-          name: host-var-run-ovn-kubernetes
-        # CNI related mounts which we take over
-        - mountPath: /host/opt/cni/bin
-          name: host-opt-cni-bin
-        - mountPath: /etc/cni/net.d
-          name: host-etc-cni-netd
-        - mountPath: /var/lib/cni/networks/ovn-k8s-cni-overlay
-          name: host-var-lib-cni-networks-ovn-kubernetes
 
         resources:
           requests:
@@ -195,16 +157,6 @@ spec:
           value: "3"
         - name: OVN_LOG_SB
           value: "-vconsole:info -vfile:info"
-        - name: OVN_NET_CIDR
-          valueFrom:
-            configMapKeyRef:
-              name: ovn-config
-              key: net_cidr
-        - name: OVN_SVC_CIDR
-          valueFrom:
-            configMapKeyRef:
-              name: ovn-config
-              key: svc_cidr
         - name: K8S_APISERVER
           valueFrom:
             configMapKeyRef:
@@ -259,20 +211,5 @@ spec:
       - name: host-var-run-ovs
         hostPath:
           path: /var/run/openvswitch
-      - name: host-var-run-kubernetes
-        hostPath:
-          path: /var/run/kubernetes
-      - name: host-var-run-ovn-kubernetes
-        hostPath:
-          path: /var/run/ovn-kubernetes
-      - name: host-opt-cni-bin
-        hostPath:
-          path: /opt/cni/bin
-      - name: host-etc-cni-netd
-        hostPath:
-          path: /etc/cni/net.d
-      - name: host-var-lib-cni-networks-ovn-kubernetes
-        hostPath:
-          path: /var/lib/cni/networks/ovn-k8s-cni-overlay
       tolerations:
       - operator: "Exists"
