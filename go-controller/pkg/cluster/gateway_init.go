@@ -24,6 +24,10 @@ func getIPv4Address(iface string) (string, error) {
 				ipAddress = ip.String()
 			}
 		}
+		// get the first ip address, not the VIP
+		if ipAddress != "" {
+			break
+		}
 	}
 	return ipAddress, nil
 }

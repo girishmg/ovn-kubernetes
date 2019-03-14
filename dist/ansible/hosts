@@ -24,6 +24,8 @@ ovn_image_pull_policy=IfNotPresent
 # network configuration
 # net_cidr=10.128.0.0/14/23
 # svc_cidr=172.30.0.0/16
+# ovn_db_ip=10.132.190.158
+# ovn_db_replicas=3
 
 
 [masters]

@@ -20,6 +20,7 @@
 #    ovn-master     Runs ovnkube in master mode (v2, v3)
 #    ovn-controller Runs ovn controller (v2, v3)
 #    ovn-node       Runs ovnkube in node mode (v2, v3)
+#    run-ovn-db-cluster Runs NB/SB ovsdb in pacemaker/corosync cluaster (v3)
 #
 #    display        Displays log files
 #    display_env    Displays environment variables
@@ -122,6 +123,7 @@ svc_cidr=${OVN_SVC_CIDR:-172.30.0.0/16}
 # host on which ovnkube-db POD is running and this POD contains both
 # OVN NB and SB DB running in their own container
 ovn_db_host=""
+ovn_service_timeout=${OVN_SERVICE_TIMEOUT:-"10"}
 
 # =========================================
 
@@ -151,9 +153,8 @@ wait_for_event () {
 
 }
 
-# OVN DBs must be up and initialized before ovn-master and ovn-node PODs can come up
-# This waits for ovnkube-db POD to come up
-ready_to_start_node () {
+# This waits for ovnkube-db ep to come up
+ovnkube_db_ep_ready () {
 
   # See if ep is available ...
   ovn_db_host=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
@@ -162,6 +163,19 @@ ready_to_start_node () {
       return 1
   fi
   get_ovn_db_vars
+  return 0
+}
+
+# wait_for_event ready_to_start_node
+# OVN DBs must be up and initialized before ovn-master and ovn-node PODs can come up
+# This waits for ovnkube-db POD to come up
+ready_to_start_node () {
+
+  # See if ep is available ...
+  ovnkube_db_ep_ready
+  if [[ $? != 0 ]] ; then
+    return $?
+  fi
   ovn-nbctl --db=${ovn_nbdb_test} show > /dev/null 2>&1
   if [[ $? != 0 ]] ; then
       return 1
@@ -191,6 +205,7 @@ get_ovn_db_vars () {
   ovn_nbdb=${OVN_NORTH:-tcp://${ovn_db_host}:6641}
   ovn_sbdb=${OVN_SOUTH:-tcp://${ovn_db_host}:6642}
   ovn_nbdb_test=$(echo ${ovn_nbdb} | sed 's;//;;')
+  ovn_sbdb_test=$(echo ${ovn_sbdb} | sed 's;//;;')
 }
 
 # ovs must be up before ovn comes up
@@ -327,6 +342,7 @@ ovn_debug () {
   ready_to_start_node
   echo "ovn_nbdb ${ovn_nbdb}   ovn_sbdb ${ovn_sbdb}"
   echo "ovn_nbdb_test ${ovn_nbdb_test}"
+  echo "ovn_sbdb_test ${ovn_sbdb_test}"
 
   # get ovs/ovn info from the node for debug purposes
   echo "=========== ovn_debug   hostname: ${ovn_pod_host} ============="
@@ -353,7 +369,6 @@ ovn_debug () {
   ovs-ofctl dump-flows br-int
   echo " "
   echo "=========== ovn-sbctl show ============="
-  ovn_sbdb_test=$(echo ${ovn_sbdb} | sed 's;//;;')
   echo "=========== ovn-sbctl --db=${ovn_sbdb_test} show ============="
   ovn-sbctl --db=${ovn_sbdb_test} show
   echo " "
@@ -515,6 +530,192 @@ sb-ovsdb () {
   echo "=============== run sb_ovsdb ========== terminated"
 }
 
+# Check the ovndb_server pcs resource status. return 2 if
+# the status is unknown, return 1 if the status is
+# stopped, return 0 if status is started (master or slave)
+crm_node_status () {
+  retcode=2
+  crm stat  | egrep 'Masters|Slaves|Stopped' | awk '$1=$1' > /tmp/crm_stat.$$
+  if [ $? -ne 0 ]; then
+    echo Command "crm stat" failed
+    return $retcode
+  fi
+
+  IFS=' ' read -a master_nodes <<< "$(awk -F'[][]' '{if ($1 ~ /Slaves/) print $2;}'  /tmp/crm_stat.$$ | awk '{print}')"
+  IFS=' ' read -a slave_nodes <<< "$(awk -F'[][]' '{if ($1 ~ /Masters/) print $2;}'  /tmp/crm_stat.$$ | awk '{print}')"
+  IFS=' ' read -a stopped_nodes <<< "$(awk -F'[][]' '{if ($1 ~ /Stopped/) print $2;}'  /tmp/crm_stat.$$ | awk '{print}')"
+  started_nodes=("${master_nodes[@]}" "${slave_nodes[@]}")
+  if [[ " ${master_nodes[@]} " =~ " ${ovn_pod_host} " ]]; then
+    retcode=0
+  elif [[ " ${slave_nodes[@]} " =~ " ${ovn_pod_host} " ]]; then
+    retcode=0
+  elif [[ " ${stopped_nodes[@]} " =~ " ${ovn_pod_host} " ]]; then
+    retcode=1
+  fi
+  rm -rf /tmp/crm_stat.$$
+  echo "cluster status $retcode"
+  return $retcode
+}
+
+config_corosync () {
+  corosync_conf=/etc/corosync/corosync.conf
+
+  cluster_nodes=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} get nodes --selector=node-role.kubernetes.io/ovnkube-db=true 2>/dev/null | sed '1d' | awk '{printf "%s%s",sep,$1; sep=" "} END{print ""}')
+  nnodes=$(IFS=' '; set -f; set -- $cluster_nodes; echo $#)
+  if [[ $nnodes -lt 2 ]]; then
+    echo "at least 2 nodes need to be configured"
+    exit 1
+  fi
+  echo cluster_nodes=$cluster_nodes
+
+  cat << EOF > $corosync_conf
+totem {
+  version: 2
+  cluster_name: ovn-central-cluster
+  transport: udpu
+  secauth: off
+}
+quorum {
+  provider: corosync_votequorum
+}
+logging {
+  to_logfile: yes
+  logfile: /var/log/corosync/corosync.log
+  to_syslog: yes
+  timestamp: on
+}
+nodelist {
+EOF
+
+  for h in $cluster_nodes; do
+cat << EOF >> $corosync_conf
+  node {
+    ring0_addr: $h
+  }
+EOF
+  done
+
+  cat << EOF >> $corosync_conf
+}
+EOF
+}
+
+service_start() {
+  for service in "$@"; do
+    /root/service $service start >> /dev/null 2>&1
+  done
+}
+
+service_healthy() {
+  for service in "$@"; do
+    /root/service $service status | grep "is running" >> /dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+      echo service $service is not started
+      return 1
+    fi
+  done
+  return 0
+}
+
+# v3 - Runs ovn NB/SB DB pacemaker/corosync cluster
+run-ovn-db-cluster () {
+
+  trap stop-ovn-db-cluster TERM
+  # wait for the ovnkube_db endpoint to be ready, which should be point to the
+  # pacemaker VIP
+  wait_for_event ovnkube_db_ep_ready
+  echo "ovn_db_host ${ovn_db_host}"
+
+  config_corosync
+
+  # to work around the problem that service is trying to run systemctl because
+  # existence of /var/run/systemd/system folder, which exists because mounted
+  # host /var/run folder
+  sed 's/is_systemd=1/is_systemd=/' /usr/sbin/service > /root/service
+  chmod +x /root/service
+  service_start pcsd corosync pacemaker
+  service_healthy pcsd corosync pacemaker
+  if [[ $? -ne 0 ]]; then
+    exit 11
+  fi
+
+  pcs property set stonith-enabled=false > /dev/null 2>&1
+  pcs property set no-quorum-policy=ignore > /dev/null 2>&1
+  pcs resource create VirtualIP ocf:heartbeat:IPaddr2 ip=$ovn_db_host op monitor interval=30s > /dev/null 2>&1
+  pcs resource create ovndb_servers ocf:ovn:ovndb-servers master_ip=$ovn_db_host  \
+    inactive_probe_interval=0 ovn_ctl=/usr/share/openvswitch/scripts/ovn-ctl \
+    op monitor interval="60s" timeout="50s" op monitor role=Master interval="15s" > /dev/null 2>&1
+  pcs resource master ovndb_servers-master ovndb_servers meta notify="true" > /dev/null 2>&1
+  pcs constraint order promote ovndb_servers-master then VirtualIP > /dev/null 2>&1
+  pcs constraint colocation add VirtualIP with master ovndb_servers-master score=INFINITY > /dev/null 2>&1
+
+  echo ovn_service_timeout=${ovn_service_timeout}
+  SECONDS=0
+  started=0
+
+  # If ovn_service_timeout is non-zero and resource is not started after that time, exit so K8s
+  # can relaunch the container. The initial launch takes more time, so 60s is used if ovn_service_timeout
+  # is non-zero
+  initial_timeout=${ovn_service_timeout}
+  if [[ ${initial_timeout} -ne 0 ]]; then
+    initial_timeout=60
+  fi
+
+  while true; do
+    # Check resource status on this node
+    crm_node_status
+    ret=$?
+
+    # if this is the initial launch and this node is Stopped, try unstandby
+    if [[ -z ${following_service_timeout+x} ]] && [[ $ret -eq 1 ]]; then
+	echo pcs node unstandby ${ovn_pod_host}
+        pcs node unstandby ${ovn_pod_host}
+    fi
+
+    duration=$SECONDS
+    if [[ $started -eq 0 ]]; then
+      timeout=${following_service_timeout:-${initial_timeout}}
+
+      if [[ $ret -eq 0 ]]; then
+        echo "ovn-central started after $duration seconds"
+        following_service_timeout=${ovn_service_timeout}
+        started=1
+      elif [[ $timeout -ne 0 ]] && [[ $duration -gt $timeout ]]; then
+        echo "after $duration sec, ovn-central not able to be started (timeout:$timeout sec)"
+        exit 11
+      fi
+    elif [[ $started -eq 1 ]] && [[ $ret -ne 0 ]]; then
+      # Service stopped for some reason, reset the timer
+      echo "ovn-central stopped"
+      started=0
+      SECONDS=0
+    fi
+    sleep 1
+  done
+  exit 11
+}
+
+# v3 - standby ovn NB/SB DB cluster on this node
+# this will gracefully stop the cluster on this
+# node and unplumb the VIP if needed
+stop-ovn-db-cluster () {
+  echo pcs node standby ${ovn_pod_host}
+  pcs cluster standby ${ovn_pod_host}
+  retries=0
+  while true; do
+    crm_node_status
+    ret=$?
+    if [[ $ret -ne 0 ]] ; then
+      break
+    fi
+    (( retries += 1 ))
+    if [[ "${retries}" -gt 30 ]]; then
+      echo "error: OVN DB cluster failed to be stopped gracefully"
+      break
+    fi
+    sleep 1
+  done
+}
 
 # v3 - Runs northd on master. Does not run nb_ovsdb, and sb_ovsdb
 run-ovn-northd () {
@@ -537,11 +738,9 @@ run-ovn-northd () {
 
   # no monitor (and no detach), start northd which connects to the
   # ovnkube-db service
-  ovn_nbdb_i=$(echo ${ovn_nbdb} | sed 's;//;;')
-  ovn_sbdb_i=$(echo ${ovn_sbdb} | sed 's;//;;')
   /usr/share/openvswitch/scripts/ovn-ctl start_northd \
     --no-monitor --ovn-manage-ovsdb=no \
-    --ovn-northd-nb-db=${ovn_nbdb_i} --ovn-northd-sb-db=${ovn_sbdb_i} \
+    --ovn-northd-nb-db=${ovn_nbdb_test} --ovn-northd-sb-db=${ovn_sbdb_test} \
     --ovn-northd-log="${ovn_log_northd}" \
     ${ovn_northd_opts}
 
@@ -805,6 +1004,7 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
 # ovn-master     - master node only (v2 v3)
 # ovn-controller - all nodes (v2 v3)
 # ovn-node       - all nodes (v2 v3)
+# run-ovn-db-cluster - Runs NB/SB ovsdb in pacemaker/corosync cluster
 
   case ${cmd} in
     "nb-ovsdb")        # pod ovnkube-db container nb-ovsdb
@@ -830,6 +1030,9 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
     ;;
     "ovn-northd")
 	ovn-northd
+    ;;
+    "run-ovn-db-cluster")
+       run-ovn-db-cluster
     ;;
     "display_env")
         display_env
@@ -857,7 +1060,7 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
 	echo "invalid command ${cmd}"
 	echo "valid v1 commands: start-ovn display_env display ovn_debug"
 	echo "valid v2 commands: ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug"
-	echo "valid v3 commands: ovs-server nb-ovsdb sb-ovsdb run-ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug"
+	echo "valid v3 commands: ovs-server nb-ovsdb sb-ovsdb run-ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug run-ovn-db-cluster"
 	exit 0
   esac
 
