@@ -120,7 +120,7 @@ net_cidr=${OVN_NET_CIDR:-10.128.0.0/14/23}
 svc_cidr=${OVN_SVC_CIDR:-172.30.0.0/16}
 
 # host on which ovnkube-db POD is running and this POD contains both
-# OVN NB and OVN SB DB running in their own container
+# OVN NB and SB DB running in their own container
 ovn_db_host=""
 
 # =========================================
@@ -183,7 +183,7 @@ check_ovn_daemonset_version () {
   exit 1
 }
 
-# The ovn vars are based on the hostname and IP of the K8s node
+# The ovn vars are based on the IP address of the K8s node
 # on which ovnkube-db is running on.
 get_ovn_db_vars () {
   # OVN_NORTH and OVN_SOUTH override derived host
@@ -433,22 +433,22 @@ create_ovnkube_db_ep () {
   # create a new endpoint for the headless onvkube-db service without selectors
   # using the current host has the endpoint IP
   ovn_db_host=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
-  kubectl create -f - << EOF
+  kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} create -f - << EOF
 apiVersion: v1
 kind: Endpoints
 metadata:
   name: ovnkube-db
-  Namespace: ovn-kubernetes
+  namespace: ovn-kubernetes
 subsets:
   - addresses:
       - ip: ${ovn_db_host}
     ports:
     - name: north
-        port: 6641
-        protocol: TCP
+      port: 6641
+      protocol: TCP
     - name: south
-        port: 6642
-        protocol: TCP
+      port: 6642
+      protocol: TCP
 EOF
     if [[ $? != 0 ]] ; then
         echo "Failed to create endpoint with host ${ovn_db_host} for ovnkube-db service"
@@ -458,6 +458,7 @@ EOF
 
 # v3 - run nb_ovsdb in a separate container
 nb-ovsdb () {
+  trap 'kill $(jobs -p); exit 0' TERM
   check_ovn_daemonset_version "3"
   rm -f /var/run/openvswitch/ovnnb_db.pid
 
@@ -485,6 +486,7 @@ nb-ovsdb () {
 
 # v3 - run sb_ovsdb in a separate container
 sb-ovsdb () {
+  trap 'kill $(jobs -p); exit 0' TERM
   check_ovn_daemonset_version "3"
   rm -f /var/run/openvswitch/ovnsb_db.pid
 
@@ -521,10 +523,6 @@ run-ovn-northd () {
 
   # Make sure /var/lib/openvswitch exists
   mkdir -p /var/lib/openvswitch
-
-
-  echo "=============== run-ovn-northd (wait for ovs) ========== MASTER ONLY"
-  wait_for_event ovs_ready
 
   echo "=============== run-ovn-northd (wait for ready_to_start_node)"
   wait_for_event ready_to_start_node
