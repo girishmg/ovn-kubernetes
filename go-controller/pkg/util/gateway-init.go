@@ -419,6 +419,16 @@ func GatewayInit(clusterIPSubnet []string, nodeName, nicIP, physicalInterface,
 		if err != nil {
 			return err
 		}
+
+		// Add a specific route in distributed router for this GR router IP .
+		stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
+			k8sClusterRouter, routerIPByte.String(), routerIPByte.String())
+		if err != nil {
+			return fmt.Errorf("Failed to add a specific route in distributed router "+
+				"for this GR router's IP %s, stdout: %q, stderr: %q, error: %v",
+				routerIPByte.String(), stdout, stderr, err)
+		}
+
 		stdout, stderr, err = RunOVNNbctl("set", "logical_router",
 			gatewayRouter, "options:lb_force_snat_ip="+routerIPByte.String())
 		if err != nil {
