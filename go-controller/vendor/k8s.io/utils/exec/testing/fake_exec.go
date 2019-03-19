@@ -74,6 +74,9 @@ func (fake *FakeCmd) SetDir(dir string) {
 	fake.Dirs = append(fake.Dirs, dir)
 }
 
+func (fake *FakeCmd) SetExtraEnv(extraEnv string) {
+}
+
 func (fake *FakeCmd) SetStdin(in io.Reader) {
 	fake.Stdin = in
 }

@@ -20,7 +20,7 @@
 #    ovn-master     Runs ovnkube in master mode (v2, v3)
 #    ovn-controller Runs ovn controller (v2, v3)
 #    ovn-node       Runs ovnkube in node mode (v2, v3)
-#
+#    run-ovn-nbctl  Runs ovn-nbctl in the daemon mode (v3)
 #    display        Displays log files
 #    display_env    Displays environment variables
 #    ovn_debug      Displays ovn/ovs configuration and flows
@@ -55,6 +55,7 @@
 # OVN_LOG_NB - log level (ovn-ctl default: -vconsole:off -vfile:info)
 # OVN_LOG_SB - log level (ovn-ctl default: -vconsole:off -vfile:info)
 # OVN_LOG_CONTROLLER - log level (ovn-ctl default: -vconsole:off -vfile:info)
+# OVN_LOG_NBCTL_FILE - log file (ovn-nbctl daemon mode default: /var/log/openvswitch/ovn-nbctl.log)
 
 # The argument to the command is the operation to be performed
 # ovn-northd ovn-master ovn-controller ovn-node display display_env ovn_debug
@@ -70,6 +71,7 @@ ovn_log_northd=${OVN_LOG_NORTHD:-"-vconsole:info"}
 ovn_log_nb=${OVN_LOG_NB:-"-vconsole:info"}
 ovn_log_sb=${OVN_LOG_SB:-"-vconsole:info"}
 ovn_log_controller=${OVN_LOG_CONTROLLER:-"-vconsole:info"}
+ovn_log_nbctl_file=${OVN_LOG_NBCTL_FILE:-"/var/log/openvswitch/ovn-nbctl.log"}
 
 logdir=/var/log/openvswitch
 ovnkubelogdir=/var/log/ovn-kubernetes
@@ -278,6 +280,7 @@ display () {
   display_file "ovsdb-server" /var/run/openvswitch/ovsdb-server.pid ${logdir}/ovsdb-server.log
   display_file "ovn-controller" /var/run/openvswitch/ovn-controller.pid ${logdir}/ovn-controller.log
   display_file "ovnkube" /var/run/openvswitch/ovnkube.pid ${ovnkubelogdir}/ovnkube.log
+  display_file "run-ovn-nbctl" /var/run/openvswitch/ovn-nbctl.pid ${logdir}/ovn-nbctl.log
 }
 
 setup_cni () {
@@ -602,6 +605,13 @@ ovn-master () {
 
   # wait for northd to start
   wait_for_event pid_ready ovn-northd.pid
+
+  if [[ ${ovn_daemonset_version} == "3" ]] ; then
+    echo "=============== ovn-master (wait for ovn-nbctl daemon) ========== MASTER ONLY"
+    wait_for_event pid_ready ovn-nbctl.pid
+    ovn_nbdb="pid://:"
+  fi
+
   sleep 5
 
   # wait for ovs-servers to start since ovn-master sets some fields in OVS DB
@@ -678,6 +688,13 @@ ovn-node () {
 
   echo "=============== ovn-node - (ovn-node  wait for ovn-controller.pid)"
   wait_for_event pid_ready ovn-controller.pid
+
+  if [[ ${ovn_daemonset_version} == "3" ]] ; then
+    echo "=============== ovn-node (wait for ovn-nbctl daemon)"
+    wait_for_event pid_ready ovn-nbctl.pid
+    ovn_nbdb="pid://:"
+  fi
+
   sleep 1
 
   echo "=============== ovn-node   --init-node"
@@ -707,6 +724,32 @@ ovn-node () {
   pid_health /var/run/openvswitch/ovnkube.pid ${node_tail_pid}
   exit 7
 }
+
+# v3 - Runs northd on master. Does not run nb_ovsdb, and sb_ovsdb
+run-ovn-nbctl () {
+  check_ovn_daemonset_version "3"
+  rm -f /var/run/openvswitch/ovn-nbctl.pid
+
+  echo "=============== run-ovn-nbctl - (wait for ready_to_start_node)"
+  wait_for_event ready_to_start_node
+  echo "ovn_nbdb ${ovn_nbdb}   ovn_sbdb ${ovn_sbdb}  ovn_nbdb_test ${ovn_nbdb_test}"
+  echo "ovn_log_nbctl_file=${ovn_log_nbctl_file}"
+
+  # use unix socket
+  /usr/bin/ovn-nbctl --pidfile --detach --db=${ovn_nbdb_test} \
+    --log-file=${ovn_log_nbctl_file}
+
+  wait_for_event pid_ready ovn-nbctl.pid
+  echo "=============== run_ovn_nbctl ========== RUNNING"
+
+  tail --follow=name /var/log/openvswitch/ovn-nbctl.log &
+  nbctl_tail_pid=$!
+
+
+  pid_health /var/run/openvswitch/ovn-nbctl.pid ${nbctl_tail_pid}
+  exit 11
+}
+
 
 # version 1 daemonset compatibility
 # $1 is "" or "start_ovn"
@@ -831,6 +874,9 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
     ;;
     "ovn-node")        # pod ovnkube-node container ovn-node
 	ovn-node
+    ;;
+    "run-ovn-nbctl")   # pod ovnkube-node container run-ovn-nbctl
+       run-ovn-nbctl
     ;;
     "ovn-northd")
 	ovn-northd

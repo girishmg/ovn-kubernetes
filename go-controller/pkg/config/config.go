@@ -132,6 +132,9 @@ const (
 	OvnDBSchemeTCP OvnDBScheme = "tcp"
 	// OvnDBSchemeUnix specifies Unix domains sockets as the OVN database transport method
 	OvnDBSchemeUnix OvnDBScheme = "unix"
+	// OvnDBSchemeDaemonMode specifies nbctl daemon mode as the OVN database transport
+	// method, NB only
+	OvnDBSchemeDaemonMode OvnDBScheme = "daemonMode"
 )
 
 // Config is used to read the structured config file and to cache config in testcases
@@ -727,6 +730,10 @@ func parseAddress(urlString string) (string, OvnDBScheme, error) {
 			return "", "", fmt.Errorf("Invalid protocols in OVN address %s",
 				urlString)
 		}
+		// if this is ovn-nbctl daemon mode, no other processing
+		if scheme == "pid" {
+			continue
+		}
 
 		host, port, err := net.SplitHostPort(hostPort)
 		if err != nil {
@@ -750,6 +757,8 @@ func parseAddress(urlString string) (string, OvnDBScheme, error) {
 		parsedScheme = OvnDBSchemeSSL
 	case scheme == "tcp":
 		parsedScheme = OvnDBSchemeTCP
+	case scheme == "pid":
+		parsedScheme = OvnDBSchemeDaemonMode
 	default:
 		return "", "", fmt.Errorf("unknown OVN DB scheme %q", scheme)
 	}
@@ -812,6 +821,8 @@ func buildOvnAuth(exec kexec.Interface, northbound bool, cliAuth, confAuth *OvnA
 			return nil, fmt.Errorf("must specify private key, certificate, and CA certificate for 'ssl' scheme")
 		}
 	case auth.Scheme == OvnDBSchemeTCP:
+		fallthrough
+	case auth.Scheme == OvnDBSchemeDaemonMode:
 		if auth.PrivKey != "" || auth.Cert != "" || auth.CACert != "" {
 			return nil, fmt.Errorf("certificate or key given; perhaps you mean to use the 'ssl' scheme?")
 		}
@@ -857,7 +868,7 @@ func (a *OvnAuthConfig) GetURL() string {
 // SetDBAuth sets the authentication configuration and connection method
 // for the OVN northbound or southbound database server or client
 func (a *OvnAuthConfig) SetDBAuth() error {
-	if a.Scheme == OvnDBSchemeUnix {
+	if a.Scheme == OvnDBSchemeUnix || a.Scheme == OvnDBSchemeDaemonMode {
 		// Nothing to do
 		return nil
 	} else if a.Scheme == OvnDBSchemeSSL {

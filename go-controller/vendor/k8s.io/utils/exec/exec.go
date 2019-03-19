@@ -18,6 +18,7 @@ package exec
 
 import (
 	"io"
+	"os"
 	osexec "os/exec"
 	"syscall"
 	"time"
@@ -52,6 +53,8 @@ type Cmd interface {
 	SetStdin(in io.Reader)
 	SetStdout(out io.Writer)
 	SetStderr(out io.Writer)
+	// Set extra environment variable
+	SetExtraEnv(extraEnv string)
 	// Stops the command by sending SIGTERM. It is not guaranteed the
 	// process will stop before this function returns. If the process is not
 	// responding, an internal timer function will send a SIGKILL to force
@@ -120,6 +123,11 @@ func (cmd *cmdWrapper) CombinedOutput() ([]byte, error) {
 		return out, handleError(err)
 	}
 	return out, nil
+}
+
+// SetExtraEnv is part of the Cmd interface.
+func (cmd *cmdWrapper) SetExtraEnv(extraEnv string) () {
+	(*osexec.Cmd)(cmd).Env = append(os.Environ(), extraEnv)
 }
 
 func (cmd *cmdWrapper) Output() ([]byte, error) {

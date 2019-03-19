@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"strconv"
 
 	"github.com/sirupsen/logrus"
 	kexec "k8s.io/utils/exec"
@@ -133,10 +134,15 @@ func GetExec() kexec.Interface {
 	return runner.exec
 }
 
-func run(cmdPath string, args ...string) (*bytes.Buffer, *bytes.Buffer, error) {
+func run(cmdPath string, extraEnv string, args ...string) (*bytes.Buffer, *bytes.Buffer, error) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	cmd := runner.exec.Command(cmdPath, args...)
+
+	if extraEnv != "" {
+		logrus.Debugf("exec: %s %s with extraEnv %s", cmdPath, strings.Join(args, " "), extraEnv)
+		cmd.SetExtraEnv(extraEnv)
+	}
 	cmd.SetStdout(stdout)
 	cmd.SetStderr(stderr)
 	logrus.Debugf("exec: %s %s", cmdPath, strings.Join(args, " "))
@@ -149,7 +155,7 @@ func run(cmdPath string, args ...string) (*bytes.Buffer, *bytes.Buffer, error) {
 
 // RunOVSOfctl runs a command via ovs-ofctl.
 func RunOVSOfctl(args ...string) (string, string, error) {
-	stdout, stderr, err := run(runner.ofctlPath, args...)
+	stdout, stderr, err := run(runner.ofctlPath, "", args...)
 	return strings.Trim(stdout.String(), "\" \n"), stderr.String(), err
 }
 
@@ -157,17 +163,53 @@ func RunOVSOfctl(args ...string) (string, string, error) {
 func RunOVSVsctl(args ...string) (string, string, error) {
 	cmdArgs := []string{fmt.Sprintf("--timeout=%d", ovsCommandTimeout)}
 	cmdArgs = append(cmdArgs, args...)
-	stdout, stderr, err := run(runner.vsctlPath, cmdArgs...)
+	stdout, stderr, err := run(runner.vsctlPath, "", cmdArgs...)
 	return strings.Trim(strings.TrimSpace(stdout.String()), "\""), stderr.String(), err
+}
+
+// ReadPidFile read the pid from the specified PID file. It is an error if the pidfile does not exist
+func ReadPidFile(filename string) (int, error) {
+	logrus.Debugf("ReadPidFile %s", filename)
+	if filename == "" {
+		return 0, fmt.Errorf("invalid pid file name")
+	}
+
+	fileContents, err := ioutil.ReadFile(filename)
+	if err != nil {
+		logrus.Debugf("error in ioutil.Readfile %s: %s", filename, err)
+		return 0, err
+	}
+
+	pid, err := strconv.Atoi(string(bytes.TrimSpace(fileContents)))
+	if err != nil {
+		logrus.Debugf("error parsing pid from %s: %s", filename, err)
+		return 0, fmt.Errorf("error parsing pid from %s: %s", filename, err)
+	}
+
+	logrus.Debugf("pid from %s is %d", filename, pid)
+	return pid, nil
 }
 
 // Run the ovn-ctl command and retry if "Connection refused"
 // poll waitng for service to become available
-func runOVNretry(cmdPath string, args ...string) (*bytes.Buffer, *bytes.Buffer, error) {
-
+func runOVNretry(cmdPath string, daemonmode bool, args ...string) (*bytes.Buffer, *bytes.Buffer, error) {
+	var additionalEnv string
 	retriesLeft := 200
 	for {
-		stdout, stderr, err := run(cmdPath, args...)
+		if daemonmode {
+			pid, err := ReadPidFile("/var/run/openvswitch/ovn-nbctl.pid")
+			if err != nil || pid == 0 {
+				if retriesLeft == 0 {
+					return nil, nil, err
+				}
+				retriesLeft--
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			additionalEnv = fmt.Sprintf("OVN_NB_DAEMON=/var/run/openvswitch/ovn-nbctl.%d.ctl", pid)
+			logrus.Debugf("additionalEnv %s", additionalEnv)
+		}
+		stdout, stderr, err := run(cmdPath, additionalEnv, args...)
 		if err == nil {
 			return stdout, stderr, err
 		}
@@ -192,7 +234,7 @@ func runOVNretry(cmdPath string, args ...string) (*bytes.Buffer, *bytes.Buffer, 
 func RunOVNNbctlUnix(args ...string) (string, string, error) {
 	cmdArgs := []string{fmt.Sprintf("--timeout=%d", ovsCommandTimeout)}
 	cmdArgs = append(cmdArgs, args...)
-	stdout, stderr, err := runOVNretry(runner.nbctlPath, cmdArgs...)
+	stdout, stderr, err := runOVNretry(runner.nbctlPath, false, cmdArgs...)
 	return strings.Trim(strings.TrimFunc(stdout.String(), unicode.IsSpace), "\""),
 		stderr.String(), err
 }
@@ -216,7 +258,8 @@ func RunOVNNbctlWithTimeout(timeout int, args ...string) (string, string,
 
 	cmdArgs = append(cmdArgs, fmt.Sprintf("--timeout=%d", timeout))
 	cmdArgs = append(cmdArgs, args...)
-	stdout, stderr, err := runOVNretry(runner.nbctlPath, cmdArgs...)
+	stdout, stderr, err := runOVNretry(runner.nbctlPath,
+	  config.OvnNorth.ClientAuth.Scheme == config.OvnDBSchemeDaemonMode, cmdArgs...)
 	return strings.Trim(strings.TrimSpace(stdout.String()), "\""), stderr.String(), err
 }
 
@@ -227,25 +270,25 @@ func RunOVNNbctl(args ...string) (string, string, error) {
 
 // RunIP runs a command via the iproute2 "ip" utility
 func RunIP(args ...string) (string, string, error) {
-	stdout, stderr, err := run(runner.ipPath, args...)
+	stdout, stderr, err := run(runner.ipPath, "", args...)
 	return strings.TrimSpace(stdout.String()), stderr.String(), err
 }
 
 // RunPowershell runs a command via the Windows powershell utility
 func RunPowershell(args ...string) (string, string, error) {
-	stdout, stderr, err := run(runner.powershellPath, args...)
+	stdout, stderr, err := run(runner.powershellPath, "", args...)
 	return strings.TrimSpace(stdout.String()), stderr.String(), err
 }
 
 // RunNetsh runs a command via the Windows netsh utility
 func RunNetsh(args ...string) (string, string, error) {
-	stdout, stderr, err := run(runner.netshPath, args...)
+	stdout, stderr, err := run(runner.netshPath, "", args...)
 	return strings.TrimSpace(stdout.String()), stderr.String(), err
 }
 
 // RunRoute runs a command via the Windows route utility
 func RunRoute(args ...string) (string, string, error) {
-	stdout, stderr, err := run(runner.routePath, args...)
+	stdout, stderr, err := run(runner.routePath, "", args...)
 	return strings.TrimSpace(stdout.String()), stderr.String(), err
 }
 
@@ -260,6 +303,6 @@ func RawExec(cmdPath string, args ...string) (string, string, error) {
 			return "", "", err
 		}
 	}
-	stdout, stderr, err := run(cmdPath, args...)
+	stdout, stderr, err := run(cmdPath, "", args...)
 	return strings.TrimSpace(stdout.String()), stderr.String(), err
 }
