@@ -7,10 +7,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/openvswitch/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/openvswitch/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 const (
@@ -255,6 +257,17 @@ func CreateManagementPort(nodeName, localSubnet,
 		if err != nil {
 			return err
 		}
+	}
+
+	// First wait for the node logical switch to be created by the Master, timeout is 300s.
+	if err := wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
+		if _, _, err := util.RunOVNNbctl("get", "logical_switch", nodeName, "other-config"); err != nil {
+			return false, nil
+		}
+		return true, nil
+	}); err != nil {
+		logrus.Errorf("timed out waiting for node %q logical switch: %v", nodeName, err)
+		return err
 	}
 
 	// Create this node's management logical port on the node switch

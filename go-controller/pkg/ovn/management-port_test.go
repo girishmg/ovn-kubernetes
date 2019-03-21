@@ -79,6 +79,9 @@ var _ = Describe("Management Port Operations", func() {
 				Output: mgtPortMAC,
 			})
 			fakeCmds = ovntest.AddFakeCmd(fakeCmds, &ovntest.ExpectedCmd{
+				Cmd: "ovn-nbctl --timeout=15 get logical_switch " + nodeName + " other-config",
+			})
+			fakeCmds = ovntest.AddFakeCmd(fakeCmds, &ovntest.ExpectedCmd{
 				Cmd: "ovn-nbctl --timeout=15 -- --may-exist lsp-add " + nodeName + " " + mgtPort + " -- lsp-set-addresses " + mgtPort + " " + mgtPortMAC + " " + mgtPortIP,
 			})
 			fakeCmds = ovntest.AddFakeCmd(fakeCmds, &ovntest.ExpectedCmd{
