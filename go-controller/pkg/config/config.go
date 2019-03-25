@@ -225,6 +225,10 @@ var CommonFlags = []cli.Flag{
 		Usage: "initialize node, requires the name that node is registered with in kubernetes cluster",
 	},
 	cli.StringFlag{
+		Name:  "cleanup-node",
+		Usage: "cleanup node, requires the name that node is registered with in kubernetes cluster",
+	},
+	cli.StringFlag{
 		Name:  "pidfile",
 		Usage: "Name of file that will hold the ovnkube pid (optional)",
 	},
@@ -389,6 +393,10 @@ var OVNGatewayFlags = []cli.Flag{
 	cli.BoolFlag{
 		Name:  "init-gateways",
 		Usage: "initialize a gateway in the minion. Only useful with \"init-node\"",
+	},
+	cli.BoolFlag{
+		Name:  "cleanup-gateways",
+		Usage: "cleanup gateway in the minion. Only useful with \"cleanup-node\"",
 	},
 	cli.StringFlag{
 		Name: "gateway-interface",

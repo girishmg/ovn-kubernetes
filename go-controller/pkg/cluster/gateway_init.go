@@ -67,3 +67,15 @@ func (cluster *OvnClusterController) initGateway(
 	cluster.GatewayIntf = gwIntf
 	return nil
 }
+
+func (cluster *OvnClusterController) cleanupGateway(nodeName string) error {
+	if cluster.LocalnetGateway {
+		return cleanupLocalnetGateway();
+	}
+
+	if cluster.GatewaySpareIntf {
+		return cleanupSpareGateway(nodeName)
+	}
+
+	return cleanupSharedGateway()
+}

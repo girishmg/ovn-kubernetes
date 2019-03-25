@@ -3,12 +3,14 @@ package cluster
 import (
 	"net"
 	"time"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/openvswitch/ovn-kubernetes/go-controller/pkg/cni"
 	"github.com/openvswitch/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/openvswitch/ovn-kubernetes/go-controller/pkg/ovn"
+	"github.com/openvswitch/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
@@ -91,6 +93,43 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	// start the cni server
 	cniServer := cni.NewCNIServer("")
 	err = cniServer.Start(cni.HandleCNIRequest)
+
+	return err
+}
+
+// CleanupClusterNode cleans up OVS resources on the k8s node on ovnkube-node daemonset deletion
+func (cluster *OvnClusterController) CleanupClusterNode(name string) error {
+	var err error
+	var node *kapi.Node
+	var nodeName string
+
+	// Delete the OVS internal interface.
+	node, err = cluster.Kube.GetNode(name)
+	if err != nil {
+		logrus.Errorf("Failed to get kubenete node of %s, error: %v", name, err)
+	} else {
+		nodeName = strings.ToLower(node.Name)
+		interfaceName := util.GetK8sMgmtIntfName(nodeName)
+		stdout, stderr, err := util.RunOVSVsctl("--", "--if-exists", "del-port", "br-int", interfaceName)
+		if err != nil {
+			logrus.Errorf("Failed to delete port %s on br-int, stdout: %q, stderr: %q, error: %v",
+				interfaceName, stdout, stderr, err)
+		}
+	}
+
+	if cluster.GatewayCleanup {
+		err = cluster.cleanupGateway(nodeName)
+		if err != nil {
+			logrus.Errorf("Failed to cleanup Gateway, error: %v", err)
+		}
+	}
+
+	// Make sure br-int is deleted, the management logical port is also deleted at the same time.
+	stdout, stderr, err := util.RunOVSVsctl("--", "--if-exists", "del-br", "br-int")
+	if err != nil {
+		logrus.Errorf("Failed to ovs-vsctl del-br br-int, stdout: %q, stderr: %q, error: %v", stdout, stderr, err)
+		return err
+	}
 
 	return err
 }

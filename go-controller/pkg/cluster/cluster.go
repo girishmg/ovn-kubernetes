@@ -25,6 +25,7 @@ type OvnClusterController struct {
 	ClusterIPNet          []CIDRNetworkEntry
 
 	GatewayInit      bool
+	GatewayCleanup   bool
 	GatewayIntf      string
 	GatewayBridge    string
 	GatewayNextHop   string

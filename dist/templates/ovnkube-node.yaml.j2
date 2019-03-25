@@ -43,14 +43,6 @@ spec:
 
         command: ["/root/ovnkube.sh", "ovs-server"]
 
-        livenessProbe:
-          exec:
-            command:
-            - /usr/share/openvswitch/scripts/ovs-ctl
-            - status
-          initialDelaySeconds: 15
-          periodSeconds: 5
-
         securityContext:
           runAsUser: 0
           # Permission could be reduced by selecting an appropriate SELinux policy
@@ -69,6 +61,8 @@ spec:
           readOnly: true
         - mountPath: /etc/openvswitch
           name: host-config-openvswitch
+        - mountPath: /var/log/ovn-kubernetes/
+          name: host-var-log-ovnkube
         resources:
           requests:
             cpu: 100m
@@ -84,6 +78,10 @@ spec:
             configMapKeyRef:
               name: ovn-config
               key: k8s_apiserver
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/root/ovnkube.sh", "cleanup-ovs-server"]
 
 
       # firewall rules for ovn - assumed to be setup
@@ -270,7 +268,7 @@ spec:
         lifecycle:
           preStop:
             exec:
-              command: ["rm","-f","/etc/cni/net.d/10-ovn-kubernetes.conf"]
+              command: ["/root/ovnkube.sh", "cleanup-ovn-node"]
 
       nodeSelector:
         beta.kubernetes.io/os: "linux"

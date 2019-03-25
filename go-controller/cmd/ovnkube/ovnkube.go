@@ -193,6 +193,23 @@ func runOvnKube(ctx *cli.Context) error {
 	nodePortEnable := ctx.Bool("nodeport")
 	clusterController := ovncluster.NewClusterController(clientset, factory)
 
+	cleanupNode := ctx.String("cleanup-node")
+	if cleanupNode != "" {
+		if master != "" || node != "" {
+			panic("Cannot specify cleanup-node together with 'init-node or 'init-master'.")
+		}
+
+		clusterController.GatewaySpareIntf = ctx.Bool("gateway-spare-interface")
+		clusterController.LocalnetGateway = ctx.Bool("gateway-local")
+		clusterController.GatewayCleanup = ctx.Bool("cleanup-gateways")
+		err = clusterController.CleanupClusterNode(cleanupNode)
+		if err != nil {
+			logrus.Errorf(err.Error())
+			panic(err.Error())
+		}
+		return nil
+	}
+
 	if master != "" || node != "" {
 		clusterController.GatewayInit = ctx.Bool("init-gateways")
 		clusterController.GatewayIntf = ctx.String("gateway-interface")

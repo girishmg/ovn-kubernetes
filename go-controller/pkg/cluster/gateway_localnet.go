@@ -164,3 +164,17 @@ func initLocalnetGatewayInternal(nodeName string, clusterIPSubnet []string,
 
 	return nil
 }
+
+func cleanupLocalnetGateway() (error) {
+	// get bridgeName from ovn-bridge-mappings.
+	stdout, stderr, err := util.RunOVSVsctl("--if-exists", "get", "Open_vSwitch", ".", "external_ids:ovn-bridge-mappings")
+	if err != nil {
+		return fmt.Errorf("Failed to get ovn-bridge-mappings stderr:%s (%v)", stderr, err)
+	}
+	bridgeName := strings.Split(stdout, ":")[1]
+	_, stderr, err = util.RunOVSVsctl("--", "--if-exists", "del-br", bridgeName)
+	if err != nil {
+		return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
+	}
+	return err
+}
