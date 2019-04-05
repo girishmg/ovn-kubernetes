@@ -10,16 +10,21 @@ import (
 )
 
 // IPTablesHelper is an interface that wraps go-iptables to allow
-// mock implementations for unti testing
+// mock implementations for util testing
 type IPTablesHelper interface {
 	// ListChains returns the names of all chains in the table
 	ListChains(string) ([]string, error)
+	// ClearChain flushed (deletes all rules) in the specified table/chain.
+	// If the chain does not exist, a new one will be created
+	ClearChain(string, string) error
 	// NewChain creates a new chain in the specified table
 	NewChain(string, string) error
 	// Exists checks if given rulespec in specified table/chain exists
 	Exists(string, string, ...string) (bool, error)
 	// Insert inserts a rule into the specified table/chain
 	Insert(string, string, int, ...string) error
+	// Delete deletes rule from the specified table/chain
+	Delete(string, string, ...string) error
 }
 
 // NewWithProtocol creates a new IPTablesHelper wrapping "live" go-iptables
@@ -101,6 +106,21 @@ func (f *FakeIPTables) NewChain(tableName, chainName string) error {
 	return nil
 }
 
+// ClearChain flushed (deletes all rules) in the specified table/chain.
+// If the chain does not exist, a new one will be created
+func (f *FakeIPTables) ClearChain(tableName, chainName string) error {
+	table, err := f.getTable(tableName)
+	if err != nil {
+		return err
+	}
+	if _, err := table.getChain(chainName); err == nil {
+		// chain exists, flush the rules
+		(*table)[chainName] = nil
+		return nil
+	}
+	return f.NewChain(tableName, chainName)
+}
+
 // Exists checks if given rulespec in specified table/chain exists
 func (f *FakeIPTables) Exists(tableName, chainName string, rulespec ...string) (bool, error) {
 	table, err := f.getTable(tableName)
@@ -138,6 +158,26 @@ func (f *FakeIPTables) Insert(tableName, chainName string, pos int, rulespec ...
 		(*table)[chainName] = append(first, chain[pos-1:]...)
 	}
 	return nil
+}
+
+// Delete deletes a rule into the specified table/chain
+func (f *FakeIPTables) Delete(tableName, chainName string, rulespec ...string) error {
+	table, err := f.getTable(tableName)
+	if err != nil {
+		return err
+	}
+	chain, err := table.getChain(chainName)
+	if err != nil {
+		return err
+	}
+	rule := strings.Join(rulespec, " ")
+	for i, r := range chain {
+		if r == rule {
+			(*table)[chainName] = append(chain[:i], chain[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("rule %v not exists in %v chain from table %v", rule, chainName, tableName)
 }
 
 // MatchState matches the expected state against the actual rules
