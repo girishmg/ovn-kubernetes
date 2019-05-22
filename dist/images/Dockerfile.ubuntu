@@ -14,18 +14,18 @@ USER root
 
 RUN apt-get update && apt-get install -y iptables iproute2 curl software-properties-common setpriv
 
-RUN apt-get install -y python-six uuid-runtime kmod module-init-tools netbase
-RUN mkdir -p /root/pkgs
-COPY 2.11-nbctl-daemonMode/ /root/pkgs/
-RUN dpkg -i /root/pkgs/libopenvswitch_2.11.1-1-nv_amd64.deb /root/pkgs/openvswitch-common_2.11.1-1-nv_amd64.deb \
-	/root/pkgs/openvswitch-switch_2.11.1-1-nv_amd64.deb /root/pkgs/ovn-common_2.11.1-1-nv_amd64.deb \
-	/root/pkgs/ovn-host_2.11.1-1-nv_amd64.deb /root/pkgs/ovn-central_2.11.1-1-nv_amd64.deb
+# We do not have much control over the exact version of OVS/OVN that can be
+# obtained from upstream Ubuntu. guru@ovn.org maintains more latest versions of
+# OVS/OVN packages at 18.191.116.101. Please comment out the next 3 lines if
+# you prefer to use upstream Ubuntu packages instead.
+RUN echo "deb http://18.191.116.101/openvswitch/stable /" |  tee /etc/apt/sources.list.d/openvswitch.list
+RUN curl http://18.191.116.101/openvswitch/keyFile |  apt-key add -
 
 RUN echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | tee -a /etc/apt/sources.list.d/kubernetes.list
 RUN curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
 
 # Install OVS and OVN packages.
-RUN apt-get update && apt-get install -y kubectl
+RUN apt-get update && apt-get install -y openvswitch-switch openvswitch-common ovn-central ovn-common ovn-host kubectl
 
 RUN mkdir -p /var/run/openvswitch
 RUN mkdir -p /etc/cni/net.d

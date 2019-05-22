@@ -10,8 +10,7 @@ nodes
 # These variables may be added to the host file used to install the cluster
 
 # This is the community build (default)
-#ovn_image="docker.io/ovnkube/ovn-daemonset:latest"
-ovn_image="docker.io/zhouyun2000/ovn-kube-u:sdn-166-new"
+ovn_image="docker.io/ovnkube/ovn-daemonset:latest"
 # This is an official redhat build
 # ovn_image="registry.access.redhat.com/openshift3/ose-ovn-kubernetes:v4.0"
 # This is an official (internal) redhat build
@@ -25,8 +24,6 @@ ovn_image_pull_policy=IfNotPresent
 # network configuration
 # net_cidr=10.128.0.0/14/23
 # svc_cidr=172.30.0.0/16
-net_cidr=192.168.0.0/16/23
-svc_cidr=10.96.0.0/12
 
 
 [masters]
