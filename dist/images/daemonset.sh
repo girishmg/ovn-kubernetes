@@ -13,6 +13,8 @@ OVN_NET_CIDR=""
 OVN_SVC_DIDR=""
 OVN_K8S_APISERVER=""
 OVN_GATEWAY_OPTS=""
+OVN_DB_REPLICAS=""
+OVN_DB_HA_VIP=""
 
 # Parse parameters given as arguments to this script.
 while [ "$1" != "" ]; do
@@ -36,6 +38,12 @@ while [ "$1" != "" ]; do
             ;;
         --k8s-apiserver)
             OVN_K8S_APISERVER=$VALUE
+            ;;
+        --db-replicas)
+            OVN_DB_REPLICAS=$VALUE
+            ;;
+        --db-ha-vip)
+            OVN_DB_HA_VIP=$VALUE
             ;;
         *)
             echo "WARNING: unknown parameter \"$PARAM\""
@@ -79,10 +87,17 @@ echo "imagePullPolicy: ${policy}"
 ovn_gateway_opts=${OVN_GATEWAY_OPTS}
 echo "ovn_gateway_opts: ${ovn_gateway_opts}"
 
+ovn_db_replicas=${OVN_DB_REPLICAS:-3}
+echo "ovn_db_replicas: ${ovn_db_replicas}"
+ovn_db_ha_vip=${OVN_DB_HA_VIP}
+echo "ovn_db_ha_vip: ${ovn_db_ha_vip}"
+
 # Simplified expansion of template 
 image_str="{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
 policy_str="{{ ovn_image_pull_policy | default('IfNotPresent') }}"
 ovn_gateway_opts_repl="{{ ovn_gateway_opts }}"
+ovn_db_replicas_repl="{{ ovn_db_replicas | default(3) }}"
+ovn_db_ha_vip_repl="{{ ovn_db_ha_vip }}"
 
 sed "s,${image_str},${image},
 s,${ovn_gateway_opts_repl},${ovn_gateway_opts},
@@ -93,6 +108,11 @@ s,${policy_str},${policy}," ../templates/ovnkube-master.yaml.j2 > ../yaml/ovnkub
 
 sed "s,${image_str},${image},
 s,${policy_str},${policy}," ../templates/ovnkube-db.yaml.j2 > ../yaml/ovnkube-db.yaml
+
+sed "s,${image_str},${image},
+s,${ovn_db_replicas_repl},${ovn_db_replicas},
+s,${ovn_db_ha_vip_repl},${ovn_db_ha_vip},
+s,${policy_str},${policy}," ../templates/ovnkube-db-ha.yaml.j2 > ../yaml/ovnkube-db-ha.yaml
 
 # ovn-setup.yaml
 # net_cidr=10.128.0.0/14/23
