@@ -7,6 +7,8 @@ import (
 	"net"
 	"sort"
 	"strings"
+
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 )
 
 const (
@@ -165,8 +167,7 @@ func getGatewayLoadBalancers(gatewayRouter string) (string, string, error) {
 
 // GatewayInit creates a gateway router for the local chassis.
 func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddress,
-	defaultGW string, rampoutIPSubnet string, localnet bool, gatewayVLANId uint,
-	gatewayLBEnable bool) error {
+	defaultGW string, rampoutIPSubnet string, localnet bool, gatewayVLANId uint) error {
 
 	ip, physicalIPNet, err := net.ParseCIDR(nicIP)
 	if err != nil {
@@ -255,7 +256,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 			stdout, stderr, err)
 	}
 
-	if gatewayLBEnable {
+	if config.Gateway.NodeportEnable {
 		// Create 2 load-balancers for north-south traffic for each gateway
 		// router.  One handles UDP and another handles TCP.
 		var k8sNSLbTCP, k8sNSLbUDP string
@@ -322,7 +323,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 	if gatewayVLANId != 0 {
 		cmdArgs = append(cmdArgs, "--", "set", "logical_switch_port",
-			ifaceID, fmt.Sprintf("tag_request=%d", gatewayVLANId))
+			ifaceID, fmt.Sprintf("tag_request=%d", config.Gateway.VLANID))
 	}
 	stdout, stderr, err = RunOVNNbctl(cmdArgs...)
 	if err != nil {
