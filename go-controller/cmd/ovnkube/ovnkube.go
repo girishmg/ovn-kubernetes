@@ -187,7 +187,6 @@ func runOvnKube(ctx *cli.Context) error {
 		panic(err.Error())
 	}
 
-	netController := ctx.Bool("net-controller")
 	master := ctx.String("init-master")
 	node := ctx.String("init-node")
 

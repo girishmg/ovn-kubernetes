@@ -291,10 +291,6 @@ var cliConfig config
 //CommonFlags capture general options.
 var CommonFlags = []cli.Flag{
 	// Mode flags
-	cli.BoolFlag{
-		Name:  "net-controller",
-		Usage: "Flag to start the central controller that watches pods/services/policies",
-	},
 	cli.StringFlag{
 		Name:  "init-master",
 		Usage: "initialize master, requires the hostname as argument",
