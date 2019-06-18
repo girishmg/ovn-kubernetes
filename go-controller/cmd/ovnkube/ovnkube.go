@@ -207,6 +207,11 @@ func runOvnKube(ctx *cli.Context) error {
 				logrus.Errorf(err.Error())
 				panic(err.Error())
 			}
+			ovnController := ovn.NewOvnController(clientset, factory)
+			if err := ovnController.Run(); err != nil {
+				logrus.Errorf(err.Error())
+				panic(err.Error())
+			}
 		}
 
 		if node != "" {
@@ -220,19 +225,7 @@ func runOvnKube(ctx *cli.Context) error {
 				panic(err.Error())
 			}
 		}
-	}
-	if netController {
-		ovnController := ovn.NewOvnController(clientset, factory)
-		if err := ovnController.Run(); err != nil {
-			logrus.Errorf(err.Error())
-			panic(err.Error())
-		}
-	}
-	if master != "" || netController {
-		// run forever
-		select {}
-	}
-	if node != "" {
+
 		// run forever
 		select {}
 	}
