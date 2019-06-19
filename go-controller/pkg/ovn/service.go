@@ -9,7 +9,7 @@ import (
 	"net"
 )
 
-func (ovn *Controller) syncServices(services []interface{}) {
+func (ovn *OvnMasterController) syncServices(services []interface{}) {
 	// For all clusterIP in k8s, we will populate the below slice with
 	// IP:port. In OVN's database those are the keys. We need to
 	// have separate slice for TCP and UDP load-balancers (hence the dict).
@@ -167,7 +167,7 @@ func (ovn *Controller) syncServices(services []interface{}) {
 	}
 }
 
-func (ovn *Controller) deleteService(service *kapi.Service) {
+func (ovn *OvnMasterController) deleteService(service *kapi.Service) {
 	if !util.IsServiceIPSet(service) || len(service.Spec.Ports) == 0 {
 		return
 	}

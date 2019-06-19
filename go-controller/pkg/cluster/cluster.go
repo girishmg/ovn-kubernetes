@@ -12,17 +12,17 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// OvnClusterController is the object holder for utilities meant for cluster management
-type OvnClusterController struct {
-	Kube                      kube.Interface
-	watchFactory              *factory.WatchFactory
+// OvnNodeController is the object holder for utilities meant for cluster management
+type OvnNodeController struct {
+	kube         kube.Interface
+	watchFactory *factory.WatchFactory
 }
 
-// NewClusterController creates a new controller for IP subnet allocation to
+// NewOvnNodeController creates a new controller for IP subnet allocation to
 // a given resource type (either Namespace or Node)
-func NewClusterController(kubeClient kubernetes.Interface, wf *factory.WatchFactory) *OvnClusterController {
-	return &OvnClusterController{
-		Kube:         &kube.Kube{KClient: kubeClient},
+func NewOvnNodeController(kubeClient kubernetes.Interface, wf *factory.WatchFactory) *OvnNodeController {
+	return &OvnNodeController{
+		kube:         &kube.Kube{KClient: kubeClient},
 		watchFactory: wf,
 	}
 }
@@ -60,16 +60,6 @@ func setupOVNNode(nodeName string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("error setting OVS external IDs: %v\n  %q", err, stderr)
-	}
-	return nil
-}
-
-func setupOVNMaster(nodeName string) error {
-	// Configure both server and client of OVN databases, since master uses both
-	for _, auth := range []config.OvnAuthConfig{config.OvnNorth, config.OvnSouth} {
-		if err := auth.SetDBAuth(); err != nil {
-			return err
-		}
 	}
 	return nil
 }

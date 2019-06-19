@@ -22,7 +22,7 @@ import (
 
 // StartClusterNode learns the subnet assigned to it by the master controller
 // and calls the SetupNode script which establishes the logical switch
-func (cluster *OvnClusterController) StartClusterNode(name string) error {
+func (cluster *OvnNodeController) StartClusterNode(name string) error {
 	var err error
 	var node *kapi.Node
 	var subnet *net.IPNet
@@ -35,7 +35,7 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 
 	// First wait for the node logical switch to be created by the Master, timeout is 300s.
 	if err := wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
-		node, err = cluster.Kube.GetNode(name)
+		node, err = cluster.kube.GetNode(name)
 		if err != nil {
 			logrus.Errorf("Error starting node %s, no node found - %v", name, err)
 			return false, nil
@@ -139,7 +139,7 @@ func updateOVNConfig(ep *kapi.Endpoints) {
 }
 
 //watchConfigEndpoints starts the watching of Endpoint resource and calls back to the appropriate handler logic
-func (cluster *OvnClusterController) watchConfigEndpoints() error {
+func (cluster *OvnNodeController) watchConfigEndpoints() error {
 	_, err := cluster.watchFactory.AddFilteredEndpointsHandler(config.Kubernetes.OVNConfigNamespace,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {

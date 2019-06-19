@@ -17,7 +17,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 
-	ovncluster "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cluster"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cluster"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
@@ -191,24 +191,16 @@ func runOvnKube(ctx *cli.Context) error {
 	node := ctx.String("init-node")
 
 	if master != "" || node != "" {
-		clusterController := ovncluster.NewClusterController(clientset, factory)
-		clusterController.ClusterIPNet, err = parseClusterSubnetEntries(ctx.String("cluster-subnet"))
-		if err != nil {
-			panic(err.Error())
-		}
-
 		if master != "" {
 			if runtime.GOOS == "windows" {
 				panic("Windows is not supported as master node")
 			}
-			// run the cluster controller to init the master
-			err := clusterController.StartClusterMaster(master)
+			ovnMasterController := ovn.NewOvnMasterController(clientset, factory)
+			ovnMasterController.ClusterIPNet, err = parseClusterSubnetEntries(ctx.String("cluster-subnet"))
 			if err != nil {
-				logrus.Errorf(err.Error())
 				panic(err.Error())
 			}
-			ovnController := ovn.NewOvnController(clientset, factory)
-			if err := ovnController.Run(); err != nil {
+			if err := ovnMasterController.StartClusterMaster(master); err != nil {
 				logrus.Errorf(err.Error())
 				panic(err.Error())
 			}
@@ -219,7 +211,8 @@ func runOvnKube(ctx *cli.Context) error {
 				panic("Cannot initialize node without service account 'token'. Please provide one with --k8s-token argument")
 			}
 
-			err := clusterController.StartClusterNode(node)
+			ovnNodeController := cluster.NewOvnNodeController(clientset, factory)
+			err := ovnNodeController.StartClusterNode(node)
 			if err != nil {
 				logrus.Errorf(err.Error())
 				panic(err.Error())
@@ -229,7 +222,7 @@ func runOvnKube(ctx *cli.Context) error {
 		// run forever
 		select {}
 	} else {
-		panic("Need to run ovnkube in either master or node mode.")
+		panic("Need to run ovnkube in either master and/or node mode.")
 	}
 
 	return nil
@@ -238,13 +231,13 @@ func runOvnKube(ctx *cli.Context) error {
 // parseClusterSubnetEntries returns the parsed set of CIDRNetworkEntries passed by the user on the command line
 // These entries define the clusters network space by specifying a set of CIDR and netmaskas the SDN can allocate
 // addresses from.
-func parseClusterSubnetEntries(clusterSubnetCmd string) ([]ovncluster.CIDRNetworkEntry, error) {
-	var parsedClusterList []ovncluster.CIDRNetworkEntry
+func parseClusterSubnetEntries(clusterSubnetCmd string) ([]ovn.CIDRNetworkEntry, error) {
+	var parsedClusterList []ovn.CIDRNetworkEntry
 
 	clusterEntriesList := strings.Split(clusterSubnetCmd, ",")
 
 	for _, clusterEntry := range clusterEntriesList {
-		var parsedClusterEntry ovncluster.CIDRNetworkEntry
+		var parsedClusterEntry ovn.CIDRNetworkEntry
 
 		splitClusterEntry := strings.Split(clusterEntry, "/")
 		if len(splitClusterEntry) == 3 {
@@ -279,7 +272,7 @@ func parseClusterSubnetEntries(clusterSubnetCmd string) ([]ovncluster.CIDRNetwor
 }
 
 //cidrsOverlap returns a true if the cidr range overlaps any in the list of cidr ranges
-func cidrsOverlap(cidr *net.IPNet, cidrList []ovncluster.CIDRNetworkEntry) bool {
+func cidrsOverlap(cidr *net.IPNet, cidrList []ovn.CIDRNetworkEntry) bool {
 
 	for _, clusterEntry := range cidrList {
 		if cidr.Contains(clusterEntry.CIDR.IP) || clusterEntry.CIDR.Contains(cidr.IP) {

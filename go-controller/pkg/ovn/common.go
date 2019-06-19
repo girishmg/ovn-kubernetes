@@ -35,7 +35,7 @@ func hashedPortGroup(s string) string {
 // the first suffix in the name to the 'iteratorFn' for every address_set in
 // OVN. (Each unhashed name for an addressSet can be of the form
 // namespaceName.suffix1.suffix2. .suffixN)
-func (oc *Controller) forEachAddressSetUnhashedName(iteratorFn func(
+func (oc *OvnMasterController) forEachAddressSetUnhashedName(iteratorFn func(
 	string, string, string)) error {
 	output, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
 		"--columns=external_ids", "find", "address_set")
@@ -60,7 +60,7 @@ func (oc *Controller) forEachAddressSetUnhashedName(iteratorFn func(
 	return nil
 }
 
-func (oc *Controller) setAddressSet(hashName string, addresses []string) {
+func (oc *OvnMasterController) setAddressSet(hashName string, addresses []string) {
 	logrus.Debugf("setAddressSet for %s with %s", hashName, addresses)
 	if len(addresses) == 0 {
 		_, stderr, err := util.RunOVNNbctl("clear", "address_set",
@@ -81,7 +81,7 @@ func (oc *Controller) setAddressSet(hashName string, addresses []string) {
 	}
 }
 
-func (oc *Controller) createAddressSet(name string, hashName string,
+func (oc *OvnMasterController) createAddressSet(name string, hashName string,
 	addresses []string) {
 	logrus.Debugf("createAddressSet with %s and %s", name, addresses)
 	addressSet, stderr, err := util.RunOVNNbctl("--data=bare",
@@ -135,7 +135,7 @@ func (oc *Controller) createAddressSet(name string, hashName string,
 	}
 }
 
-func (oc *Controller) deleteAddressSet(hashName string) {
+func (oc *OvnMasterController) deleteAddressSet(hashName string) {
 	logrus.Debugf("deleteAddressSet %s", hashName)
 
 	_, stderr, err := util.RunOVNNbctl("--if-exists", "destroy",
@@ -147,7 +147,7 @@ func (oc *Controller) deleteAddressSet(hashName string) {
 	}
 }
 
-func (oc *Controller) createPortGroup(name string,
+func (oc *OvnMasterController) createPortGroup(name string,
 	hashName string) (string, error) {
 	logrus.Debugf("createPortGroup with %s", name)
 	portGroup, stderr, err := util.RunOVNNbctl("--data=bare",
@@ -173,7 +173,7 @@ func (oc *Controller) createPortGroup(name string,
 	return portGroup, nil
 }
 
-func (oc *Controller) deletePortGroup(hashName string) {
+func (oc *OvnMasterController) deletePortGroup(hashName string) {
 	logrus.Debugf("deletePortGroup %s", hashName)
 
 	portGroup, stderr, err := util.RunOVNNbctl("--data=bare",
@@ -198,7 +198,7 @@ func (oc *Controller) deletePortGroup(hashName string) {
 	}
 }
 
-func (oc *Controller) getIPFromOvnAnnotation(ovnAnnotation string) string {
+func (oc *OvnMasterController) getIPFromOvnAnnotation(ovnAnnotation string) string {
 	if ovnAnnotation == "" {
 		return ""
 	}

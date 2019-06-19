@@ -66,7 +66,7 @@ loop:
 	return ipAddress, nil
 }
 
-func (cluster *OvnClusterController) initGateway(
+func (cluster *OvnNodeController) initGateway(
 	nodeName string, clusterIPSubnet []string, subnet string) error {
 	if config.Gateway.Mode == config.GatewayModeLocalnet {
 		return initLocalnetGateway(nodeName, clusterIPSubnet, subnet,

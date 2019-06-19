@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func (oc *Controller) syncNamespaces(namespaces []interface{}) {
+func (oc *OvnMasterController) syncNamespaces(namespaces []interface{}) {
 	expectedNs := make(map[string]bool)
 	for _, nsInterface := range namespaces {
 		ns, ok := nsInterface.(*kapi.Namespace)
@@ -31,7 +31,7 @@ func (oc *Controller) syncNamespaces(namespaces []interface{}) {
 	}
 }
 
-func (oc *Controller) waitForNamespaceEvent(namespace string) error {
+func (oc *OvnMasterController) waitForNamespaceEvent(namespace string) error {
 	// Wait for 10 seconds to get the namespace event.
 	count := 100
 	for {
@@ -47,7 +47,7 @@ func (oc *Controller) waitForNamespaceEvent(namespace string) error {
 	return nil
 }
 
-func (oc *Controller) addPodToNamespaceAddressSet(ns, address string) {
+func (oc *OvnMasterController) addPodToNamespaceAddressSet(ns, address string) {
 	if oc.namespacePolicies[ns] == nil {
 		return
 	}
@@ -69,7 +69,7 @@ func (oc *Controller) addPodToNamespaceAddressSet(ns, address string) {
 	oc.setAddressSet(hashedAddressSet(ns), addresses)
 }
 
-func (oc *Controller) deletePodFromNamespaceAddressSet(ns, address string) {
+func (oc *OvnMasterController) deletePodFromNamespaceAddressSet(ns, address string) {
 	if address == "" || oc.namespacePolicies[ns] == nil {
 		return
 	}
@@ -91,7 +91,7 @@ func (oc *Controller) deletePodFromNamespaceAddressSet(ns, address string) {
 }
 
 // AddNamespace creates corresponding addressset in ovn db
-func (oc *Controller) AddNamespace(ns *kapi.Namespace) {
+func (oc *OvnMasterController) AddNamespace(ns *kapi.Namespace) {
 	logrus.Debugf("Adding namespace: %s", ns.Name)
 
 	if oc.namespaceMutex[ns.Name] == nil {
@@ -131,7 +131,7 @@ func (oc *Controller) AddNamespace(ns *kapi.Namespace) {
 	oc.namespacePolicies[ns.Name] = make(map[string]*namespacePolicy)
 }
 
-func (oc *Controller) deleteNamespace(ns *kapi.Namespace) {
+func (oc *OvnMasterController) deleteNamespace(ns *kapi.Namespace) {
 	logrus.Debugf("Deleting namespace: %+v", ns.Name)
 
 	if oc.namespacePolicies[ns.Name] == nil {

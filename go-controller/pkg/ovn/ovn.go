@@ -2,11 +2,9 @@ package ovn
 
 import (
 	"github.com/openshift/origin/pkg/util/netutils"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cluster"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/sirupsen/logrus"
 	kapi "k8s.io/api/core/v1"
 	kapisnetworking "k8s.io/api/networking/v1"
@@ -17,9 +15,9 @@ import (
 	"sync"
 )
 
-// Controller structure is the object which holds the controls for starting
+// OvnMasterController structure is the object which holds the controls for starting
 // and reacting upon the watched resources (e.g. pods, endpoints)
-type Controller struct {
+type OvnMasterController struct {
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
 
@@ -105,10 +103,10 @@ const (
 	UDP = "UDP"
 )
 
-// NewOvnController creates a new OVN controller for creating logical network
+// NewOvnMasterController creates a new OVN controller for creating logical network
 // infrastructure and policy
-func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory) *Controller {
-	return &Controller{
+func NewOvnMasterController(kubeClient kubernetes.Interface, wf *factory.WatchFactory) *OvnMasterController {
+	return &OvnMasterController{
 		kube:                     &kube.Kube{KClient: kubeClient},
 		watchFactory:             wf,
 		logicalSwitchCache:       make(map[string]bool),
@@ -127,25 +125,8 @@ func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory)
 	}
 }
 
-// Run starts the actual watching. Also initializes any local structures needed.
-func (oc *Controller) Run() error {
-	_, _, err := util.RunOVNNbctl("--columns=_uuid", "list",
-		"port_group")
-	if err == nil {
-		oc.portGroupSupport = true
-	}
-
-	for _, f := range []func() error{oc.WatchPods, oc.WatchServices, oc.WatchEndpoints, oc.WatchNamespaces,
-		oc.WatchNetworkPolicy, oc.WatchNodes} {
-		if err := f(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // WatchPods starts the watching of Pod resource and calls back the appropriate handler logic
-func (oc *Controller) WatchPods() error {
+func (oc *OvnMasterController) WatchPods() error {
 	_, err := oc.watchFactory.AddPodHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			pod := obj.(*kapi.Pod)
@@ -170,7 +151,7 @@ func (oc *Controller) WatchPods() error {
 
 // WatchServices starts the watching of Service resource and calls back the
 // appropriate handler logic
-func (oc *Controller) WatchServices() error {
+func (oc *OvnMasterController) WatchServices() error {
 	_, err := oc.watchFactory.AddServiceHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj interface{}) {},
 		UpdateFunc: func(old, new interface{}) {},
@@ -183,7 +164,7 @@ func (oc *Controller) WatchServices() error {
 }
 
 // WatchEndpoints starts the watching of Endpoint resource and calls back the appropriate handler logic
-func (oc *Controller) WatchEndpoints() error {
+func (oc *OvnMasterController) WatchEndpoints() error {
 	_, err := oc.watchFactory.AddEndpointsHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			ep := obj.(*kapi.Endpoints)
@@ -223,7 +204,7 @@ func (oc *Controller) WatchEndpoints() error {
 
 // WatchNetworkPolicy starts the watching of network policy resource and calls
 // back the appropriate handler logic
-func (oc *Controller) WatchNetworkPolicy() error {
+func (oc *OvnMasterController) WatchNetworkPolicy() error {
 	_, err := oc.watchFactory.AddPolicyHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			policy := obj.(*kapisnetworking.NetworkPolicy)
@@ -250,7 +231,7 @@ func (oc *Controller) WatchNetworkPolicy() error {
 
 // WatchNamespaces starts the watching of namespace resource and calls
 // back the appropriate handler logic
-func (oc *Controller) WatchNamespaces() error {
+func (oc *OvnMasterController) WatchNamespaces() error {
 	_, err := oc.watchFactory.AddNamespaceHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			ns := obj.(*kapi.Namespace)
@@ -272,12 +253,12 @@ func (oc *Controller) WatchNamespaces() error {
 
 // WatchNodes starts the watching of node resource and calls
 // back the appropriate handler logic
-func (oc *Controller) WatchNodes() error {
+func (oc *OvnMasterController) WatchNodes() error {
 	_, err := oc.watchFactory.AddNodeHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			node := obj.(*kapi.Node)
 			logrus.Debugf("Added event for Node %q", node.Name)
-			err := cluster.addNode(node)
+			err := oc.addNode(node)
 			if err != nil {
 				logrus.Errorf("error creating subnet for node %s: %v", node.Name, err)
 			}
@@ -290,7 +271,7 @@ func (oc *Controller) WatchNodes() error {
 			node := obj.(*kapi.Node)
 			logrus.Debugf("Delete event for Node %q", node.Name)
 			nodeSubnet, _ := parseNodeHostSubnet(node)
-			err := cluster.deleteNode(node.Name, nodeSubnet)
+			err := oc.deleteNode(node.Name, nodeSubnet)
 			if err != nil {
 				logrus.Error(err)
 			}

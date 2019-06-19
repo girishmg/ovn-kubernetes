@@ -224,7 +224,7 @@ var _ = Describe("Node Operations", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer f.Shutdown()
 
-			cluster := NewClusterController(fakeClient, f)
+			cluster := NewOvnNodeController(fakeClient, f)
 			Expect(cluster).NotTo(BeNil())
 
 			Expect(config.OvnNorth.Address).To(Equal("tcp:1.1.1.1:6641"), "config.OvnNorth.Address does not equal cli arg")
@@ -303,7 +303,7 @@ var _ = Describe("Node Operations", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer f.Shutdown()
 
-			cluster := NewClusterController(fakeClient, f)
+			cluster := NewOvnNodeController(fakeClient, f)
 			Expect(cluster).NotTo(BeNil())
 
 			Expect(config.OvnNorth.Address).To(Equal("tcp:1.1.1.1:6641"), "config.OvnNorth.Address does not equal cli arg")

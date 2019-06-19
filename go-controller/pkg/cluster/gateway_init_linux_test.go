@@ -238,7 +238,7 @@ cookie=0x0, duration=8366.597s, table=1, n_packets=10641, n_bytes=10370087, prio
 		Expect(err).NotTo(HaveOccurred())
 		defer wf.Shutdown()
 
-		cluster := OvnClusterController{
+		cluster := OvnNodeController{
 			watchFactory: wf,
 		}
 
@@ -390,7 +390,7 @@ GR_openshift-master-node chassis=6a47b33b-89d3-4d65-ac31-b19b549326c7 lb_force_s
 		Expect(err).NotTo(HaveOccurred())
 		defer wf.Shutdown()
 
-		cluster := OvnClusterController{
+		cluster := OvnNodeController{
 			watchFactory: wf,
 		}
 
