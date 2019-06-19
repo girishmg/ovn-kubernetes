@@ -1,15 +1,18 @@
 package ovn
 
 import (
+	"github.com/openshift/origin/pkg/util/netutils"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cluster"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/sirupsen/logrus"
 	kapi "k8s.io/api/core/v1"
 	kapisnetworking "k8s.io/api/networking/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"net"
 	"reflect"
 	"sync"
 )
@@ -19,6 +22,13 @@ import (
 type Controller struct {
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
+
+	masterSubnetAllocatorList []*netutils.SubnetAllocator
+
+	TCPLoadBalancerUUID string
+	UDPLoadBalancerUUID string
+
+	ClusterIPNet []CIDRNetworkEntry
 
 	gatewayCache map[string]string
 	// For TCP and UDP type traffic, cache OVN load-balancers used for the
@@ -73,6 +83,19 @@ type Controller struct {
 	// supports port_group?
 	portGroupSupport bool
 }
+
+// CIDRNetworkEntry is the object that holds the definition for a single network CIDR range
+type CIDRNetworkEntry struct {
+	CIDR             *net.IPNet
+	HostSubnetLength uint32
+}
+
+const (
+	// OvnHostSubnet is the constant string representing the annotation key
+	OvnHostSubnet = "ovn_host_subnet"
+	// OvnClusterRouter is the name of the distributed router
+	OvnClusterRouter = "ovn_cluster_router"
+)
 
 const (
 	// TCP is the constant string for the string "TCP"
@@ -252,17 +275,25 @@ func (oc *Controller) WatchNamespaces() error {
 func (oc *Controller) WatchNodes() error {
 	_, err := oc.watchFactory.AddNodeHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			if !config.Gateway.NodeportEnable {
-				return
-			}
 			node := obj.(*kapi.Node)
-			oc.handleNodePortLB(node)
+			logrus.Debugf("Added event for Node %q", node.Name)
+			err := cluster.addNode(node)
+			if err != nil {
+				logrus.Errorf("error creating subnet for node %s: %v", node.Name, err)
+			}
+			if config.Gateway.NodeportEnable {
+				oc.handleNodePortLB(node)
+			}
 		},
 		UpdateFunc: func(old, new interface{}) {},
 		DeleteFunc: func(obj interface{}) {
 			node := obj.(*kapi.Node)
-			logrus.Debugf("Delete event for Node %q. Removing the node from "+
-				"various caches", node.Name)
+			logrus.Debugf("Delete event for Node %q", node.Name)
+			nodeSubnet, _ := parseNodeHostSubnet(node)
+			err := cluster.deleteNode(node.Name, nodeSubnet)
+			if err != nil {
+				logrus.Error(err)
+			}
 
 			oc.lsMutex.Lock()
 			delete(oc.gatewayCache, node.Name)

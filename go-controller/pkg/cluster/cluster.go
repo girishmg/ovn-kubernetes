@@ -16,26 +16,7 @@ import (
 type OvnClusterController struct {
 	Kube                      kube.Interface
 	watchFactory              *factory.WatchFactory
-	masterSubnetAllocatorList []*netutils.SubnetAllocator
-
-	TCPLoadBalancerUUID string
-	UDPLoadBalancerUUID string
-
-	ClusterIPNet []CIDRNetworkEntry
 }
-
-// CIDRNetworkEntry is the object that holds the definition for a single network CIDR range
-type CIDRNetworkEntry struct {
-	CIDR             *net.IPNet
-	HostSubnetLength uint32
-}
-
-const (
-	// OvnHostSubnet is the constant string representing the annotation key
-	OvnHostSubnet = "ovn_host_subnet"
-	// OvnClusterRouter is the name of the distributed router
-	OvnClusterRouter = "ovn_cluster_router"
-)
 
 // NewClusterController creates a new controller for IP subnet allocation to
 // a given resource type (either Namespace or Node)

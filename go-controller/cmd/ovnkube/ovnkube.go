@@ -190,8 +190,8 @@ func runOvnKube(ctx *cli.Context) error {
 	master := ctx.String("init-master")
 	node := ctx.String("init-node")
 
-	clusterController := ovncluster.NewClusterController(clientset, factory)
 	if master != "" || node != "" {
+		clusterController := ovncluster.NewClusterController(clientset, factory)
 		clusterController.ClusterIPNet, err = parseClusterSubnetEntries(ctx.String("cluster-subnet"))
 		if err != nil {
 			panic(err.Error())
@@ -228,6 +228,8 @@ func runOvnKube(ctx *cli.Context) error {
 
 		// run forever
 		select {}
+	} else {
+		panic("Need to run ovnkube in either master or node mode.")
 	}
 
 	return nil

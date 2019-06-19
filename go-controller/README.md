@@ -39,7 +39,7 @@ Usage:
   -cluster-subnet string
      cluster wide IP subnet to use (default: 11.11.0.0/16)
   -init-master string
-     initialize master (that watches pods/nodes/services/policies), requires the hostname as argument
+     initialize master (watches pods/nodes/services/policies), requires the hostname as argument
   -init-node string
      initialize node, requires the name that node is registered with in kubernetes cluster
   -remove-node string
