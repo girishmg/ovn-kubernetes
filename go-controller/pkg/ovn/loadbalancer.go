@@ -10,7 +10,7 @@ import (
 	kapi "k8s.io/api/core/v1"
 )
 
-func (ovn *OvnMasterController) getLoadBalancer(protocol kapi.Protocol) (string,
+func (ovn *MasterController) getLoadBalancer(protocol kapi.Protocol) (string,
 	error) {
 	if outStr, ok := ovn.loadbalancerClusterCache[string(protocol)]; ok {
 		return outStr, nil
@@ -37,7 +37,7 @@ func (ovn *OvnMasterController) getLoadBalancer(protocol kapi.Protocol) (string,
 	return out, nil
 }
 
-func (ovn *OvnMasterController) getDefaultGatewayLoadBalancer(protocol kapi.Protocol) string {
+func (ovn *MasterController) getDefaultGatewayLoadBalancer(protocol kapi.Protocol) string {
 	if outStr, ok := ovn.loadbalancerGWCache[string(protocol)]; ok {
 		return outStr
 	}
@@ -58,7 +58,7 @@ func (ovn *OvnMasterController) getDefaultGatewayLoadBalancer(protocol kapi.Prot
 	return lb
 }
 
-func (ovn *OvnMasterController) getLoadBalancerVIPS(
+func (ovn *MasterController) getLoadBalancerVIPS(
 	loadBalancer string) (map[string]interface{}, error) {
 	outStr, _, err := util.RunOVNNbctl("--data=bare", "--no-heading",
 		"get", "load_balancer", loadBalancer, "vips")
@@ -78,7 +78,7 @@ func (ovn *OvnMasterController) getLoadBalancerVIPS(
 	return raw, nil
 }
 
-func (ovn *OvnMasterController) deleteLoadBalancerVIP(loadBalancer, vip string) {
+func (ovn *MasterController) deleteLoadBalancerVIP(loadBalancer, vip string) {
 	vipQuotes := fmt.Sprintf("\"%s\"", vip)
 	stdout, stderr, err := util.RunOVNNbctl("--if-exists", "remove",
 		"load_balancer", loadBalancer, "vips", vipQuotes)
@@ -89,7 +89,7 @@ func (ovn *OvnMasterController) deleteLoadBalancerVIP(loadBalancer, vip string) 
 	}
 }
 
-func (ovn *OvnMasterController) createLoadBalancerVIP(lb string, serviceIP string, port int32, ips []string, targetPort int32) error {
+func (ovn *MasterController) createLoadBalancerVIP(lb string, serviceIP string, port int32, ips []string, targetPort int32) error {
 	logrus.Debugf("Creating lb with %s, %s, %d, [%v], %d", lb, serviceIP, port, ips, targetPort)
 
 	// With service_ip:port as a VIP, create an entry in 'load_balancer'

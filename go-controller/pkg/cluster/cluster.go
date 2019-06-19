@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"net"
 
 	"github.com/openshift/origin/pkg/util/netutils"
@@ -16,6 +17,8 @@ import (
 type OvnNodeController struct {
 	kube         kube.Interface
 	watchFactory *factory.WatchFactory
+
+	ClusterIPNet []ovn.CIDRNetworkEntry
 }
 
 // NewOvnNodeController creates a new controller for IP subnet allocation to

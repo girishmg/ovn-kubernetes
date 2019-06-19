@@ -23,7 +23,7 @@ import (
 //
 // TODO: Verify that the cluster was not already called with a different global subnet
 //  If true, then either quit or perform a complete reconfiguration of the cluster (recreate switches/routers with new subnet values)
-func (oc *OvnMasterController) StartClusterMaster(masterNodeName string) error {
+func (oc *MasterController) StartClusterMaster(masterNodeName string) error {
 
 	alreadyAllocated := make([]string, 0)
 	existingNodes, err := oc.kube.GetNodes()
@@ -92,7 +92,7 @@ func setupOVNMaster(nodeName string) error {
 
 
 // SetupMaster creates the central router and load-balancers for the network
-func (oc *OvnMasterController) SetupMaster(masterNodeName string) error {
+func (oc *MasterController) SetupMaster(masterNodeName string) error {
 	if err := setupOVNMaster(masterNodeName); err != nil {
 		return err
 	}
@@ -190,7 +190,7 @@ func parseNodeHostSubnet(node *kapi.Node) (*net.IPNet, error) {
 	return subnet, nil
 }
 
-func (oc *OvnMasterController) ensureNodeHostSubnet(node *kapi.Node) (*net.IPNet, *netutils.SubnetAllocator, error) {
+func (oc *MasterController) ensureNodeHostSubnet(node *kapi.Node) (*net.IPNet, *netutils.SubnetAllocator, error) {
 	// Do not create a subnet if the node already has a subnet
 	subnet, _ := parseNodeHostSubnet(node)
 	if subnet != nil {
@@ -214,7 +214,7 @@ func (oc *OvnMasterController) ensureNodeHostSubnet(node *kapi.Node) (*net.IPNet
 	return nil, nil, fmt.Errorf("error allocating network for node %s: No more allocatable ranges", node.Name)
 }
 
-func (oc *OvnMasterController) ensureNodeLogicalNetwork(nodeName string, hostsubnet *net.IPNet) error {
+func (oc *MasterController) ensureNodeLogicalNetwork(nodeName string, hostsubnet *net.IPNet) error {
 	ip := util.NextIP(hostsubnet.IP)
 	n, _ := hostsubnet.Mask.Size()
 	firstIP := fmt.Sprintf("%s/%d", ip.String(), n)
@@ -279,7 +279,7 @@ func (oc *OvnMasterController) ensureNodeLogicalNetwork(nodeName string, hostsub
 	return nil
 }
 
-func (oc *OvnMasterController) addNode(node *kapi.Node) (err error) {
+func (oc *MasterController) addNode(node *kapi.Node) (err error) {
 	var hostsubnet *net.IPNet
 	var subnetAllocator *netutils.SubnetAllocator
 	hostsubnet, subnetAllocator, err = oc.ensureNodeHostSubnet(node)
@@ -311,7 +311,7 @@ func (oc *OvnMasterController) addNode(node *kapi.Node) (err error) {
 	return nil
 }
 
-func (oc *OvnMasterController) deleteNodeHostSubnet(nodeName string, subnet *net.IPNet) error {
+func (oc *MasterController) deleteNodeHostSubnet(nodeName string, subnet *net.IPNet) error {
 	for _, possibleSubnet := range oc.masterSubnetAllocatorList {
 		if err := possibleSubnet.ReleaseNetwork(subnet); err == nil {
 			logrus.Infof("Deleted HostSubnet %v for node %s", subnet, nodeName)
@@ -323,7 +323,7 @@ func (oc *OvnMasterController) deleteNodeHostSubnet(nodeName string, subnet *net
 	return fmt.Errorf("Error deleting subnet %v for node %q: subnet not found in any CIDR range or already available", subnet, nodeName)
 }
 
-func (oc *OvnMasterController) deleteNodeLogicalNetwork(nodeName string) error {
+func (oc *MasterController) deleteNodeLogicalNetwork(nodeName string) error {
 	// Remove the logical switch associated with the node
 	if _, stderr, err := util.RunOVNNbctl("--if-exist", "ls-del", nodeName); err != nil {
 		return fmt.Errorf("Failed to delete logical switch %s, "+
@@ -339,7 +339,7 @@ func (oc *OvnMasterController) deleteNodeLogicalNetwork(nodeName string) error {
 	return nil
 }
 
-func (oc *OvnMasterController) deleteNode(nodeName string, nodeSubnet *net.IPNet) error {
+func (oc *MasterController) deleteNode(nodeName string, nodeSubnet *net.IPNet) error {
 	// Clean up as much as we can but don't hard error
 	if nodeSubnet != nil {
 		if err := oc.deleteNodeHostSubnet(nodeName, nodeSubnet); err != nil {
@@ -358,7 +358,7 @@ func (oc *OvnMasterController) deleteNode(nodeName string, nodeSubnet *net.IPNet
 	return nil
 }
 
-func (oc *OvnMasterController) syncNodes(nodes []interface{}) {
+func (oc *MasterController) syncNodes(nodes []interface{}) {
 	foundNodes := make(map[string]*kapi.Node)
 	for _, tmp := range nodes {
 		node, ok := tmp.(*kapi.Node)
@@ -407,7 +407,7 @@ func (oc *OvnMasterController) syncNodes(nodes []interface{}) {
 	}
 }
 
-func (oc *OvnMasterController) watchNodes() error {
+func (oc *MasterController) watchNodes() error {
 	_, err := oc.watchFactory.AddNodeHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			node := obj.(*kapi.Node)

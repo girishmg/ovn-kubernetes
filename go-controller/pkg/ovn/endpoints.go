@@ -16,7 +16,7 @@ type lbEndpoints struct {
 	Port int32
 }
 
-func (ovn *OvnMasterController) getLbEndpoints(ep *kapi.Endpoints, tcpPortMap, udpPortMap map[string]lbEndpoints) {
+func (ovn *MasterController) getLbEndpoints(ep *kapi.Endpoints, tcpPortMap, udpPortMap map[string]lbEndpoints) {
 	for _, s := range ep.Subsets {
 		for _, ip := range s.Addresses {
 			for _, port := range s.Ports {
@@ -41,7 +41,7 @@ func (ovn *OvnMasterController) getLbEndpoints(ep *kapi.Endpoints, tcpPortMap, u
 }
 
 // AddEndpoints adds endpoints and creates corresponding resources in OVN
-func (ovn *OvnMasterController) AddEndpoints(ep *kapi.Endpoints) error {
+func (ovn *MasterController) AddEndpoints(ep *kapi.Endpoints) error {
 	// get service
 	// TODO: cache the service
 	svc, err := ovn.kube.GetService(ep.Namespace, ep.Name)
@@ -126,7 +126,7 @@ func (ovn *OvnMasterController) AddEndpoints(ep *kapi.Endpoints) error {
 	return nil
 }
 
-func (ovn *OvnMasterController) handleNodePortLB(node *kapi.Node) {
+func (ovn *MasterController) handleNodePortLB(node *kapi.Node) {
 	physicalGateway := "GR_" + node.Name
 	var k8sNSLbTCP, k8sNSLbUDP, physicalIP string
 	// Wait for the TCP, UDP north-south load balancers created by the new node.
@@ -199,7 +199,7 @@ func (ovn *OvnMasterController) handleNodePortLB(node *kapi.Node) {
 	}
 }
 
-func (ovn *OvnMasterController) handleExternalIPs(svc *kapi.Service, svcPort kapi.ServicePort, ips []string, targetPort int32) {
+func (ovn *MasterController) handleExternalIPs(svc *kapi.Service, svcPort kapi.ServicePort, ips []string, targetPort int32) {
 	logrus.Debugf("handling external IPs for svc %v", svc.Name)
 	if len(svc.Spec.ExternalIPs) == 0 {
 		return
@@ -217,7 +217,7 @@ func (ovn *OvnMasterController) handleExternalIPs(svc *kapi.Service, svcPort kap
 	}
 }
 
-func (ovn *OvnMasterController) deleteEndpoints(ep *kapi.Endpoints) error {
+func (ovn *MasterController) deleteEndpoints(ep *kapi.Endpoints) error {
 	svc, err := ovn.kube.GetService(ep.Namespace, ep.Name)
 	if err != nil {
 		// This is not necessarily an error. For e.g when a service is deleted,

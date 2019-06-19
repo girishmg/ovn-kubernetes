@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-func (oc *OvnMasterController) syncPods(pods []interface{}) {
+func (oc *MasterController) syncPods(pods []interface{}) {
 	// get the list of logical switch ports (equivalent to pods)
 	expectedLogicalPorts := make(map[string]bool)
 	for _, podInterface := range pods {
@@ -53,7 +53,7 @@ func (oc *OvnMasterController) syncPods(pods []interface{}) {
 	}
 }
 
-func (oc *OvnMasterController) deletePodAcls(logicalPort string) {
+func (oc *MasterController) deletePodAcls(logicalPort string) {
 	// delete the ACL rules on OVN that corresponding pod has been deleted
 	uuids, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
 		"--columns=_uuid", "find", "ACL",
@@ -98,7 +98,7 @@ func (oc *OvnMasterController) deletePodAcls(logicalPort string) {
 	}
 }
 
-func (oc *OvnMasterController) getLogicalPortUUID(logicalPort string) string {
+func (oc *MasterController) getLogicalPortUUID(logicalPort string) string {
 	if oc.logicalPortUUIDCache[logicalPort] != "" {
 		return oc.logicalPortUUIDCache[logicalPort]
 	}
@@ -119,7 +119,7 @@ func (oc *OvnMasterController) getLogicalPortUUID(logicalPort string) string {
 	return oc.logicalPortUUIDCache[logicalPort]
 }
 
-func (oc *OvnMasterController) getGatewayFromSwitch(logicalSwitch string) (string, string, error) {
+func (oc *MasterController) getGatewayFromSwitch(logicalSwitch string) (string, string, error) {
 	var gatewayIPMaskStr, stderr string
 	var ok bool
 	var err error
@@ -148,7 +148,7 @@ func (oc *OvnMasterController) getGatewayFromSwitch(logicalSwitch string) (strin
 	return gatewayIP, mask, nil
 }
 
-func (oc *OvnMasterController) deleteLogicalPort(pod *kapi.Pod) {
+func (oc *MasterController) deleteLogicalPort(pod *kapi.Pod) {
 	if pod.Spec.HostNetwork {
 		return
 	}
@@ -183,7 +183,7 @@ func (oc *OvnMasterController) deleteLogicalPort(pod *kapi.Pod) {
 	return
 }
 
-func (oc *OvnMasterController) waitForNodeLogicalSwitch(nodeName string) error {
+func (oc *MasterController) waitForNodeLogicalSwitch(nodeName string) error {
 	oc.lsMutex.Lock()
 	ok := oc.logicalSwitchCache[nodeName]
 	oc.lsMutex.Unlock()
@@ -216,7 +216,7 @@ func (oc *OvnMasterController) waitForNodeLogicalSwitch(nodeName string) error {
 	return nil
 }
 
-func (oc *OvnMasterController) addLogicalPort(pod *kapi.Pod) {
+func (oc *MasterController) addLogicalPort(pod *kapi.Pod) {
 	var out, stderr string
 	var err error
 	if pod.Spec.HostNetwork {

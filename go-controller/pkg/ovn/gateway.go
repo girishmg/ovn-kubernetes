@@ -7,7 +7,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func (ovn *OvnMasterController) getOvnGateways() ([]string, string, error) {
+func (ovn *MasterController) getOvnGateways() ([]string, string, error) {
 	// Return all created gateways.
 	out, stderr, err := util.RunOVNNbctl("--data=bare", "--no-heading",
 		"--columns=name", "find",
@@ -16,7 +16,7 @@ func (ovn *OvnMasterController) getOvnGateways() ([]string, string, error) {
 	return strings.Fields(out), stderr, err
 }
 
-func (ovn *OvnMasterController) getGatewayPhysicalIP(
+func (ovn *MasterController) getGatewayPhysicalIP(
 	physicalGateway string) (string, error) {
 	physicalIP, _, err := util.RunOVNNbctl("get", "logical_router",
 		physicalGateway, "external_ids:physical_ip")
@@ -27,7 +27,7 @@ func (ovn *OvnMasterController) getGatewayPhysicalIP(
 	return physicalIP, nil
 }
 
-func (ovn *OvnMasterController) getGatewayLoadBalancer(physicalGateway,
+func (ovn *MasterController) getGatewayLoadBalancer(physicalGateway,
 	protocol string) (string, error) {
 	externalIDKey := protocol + "_lb_gateway_router"
 	loadBalancer, _, err := util.RunOVNNbctl("--data=bare", "--no-heading",
@@ -40,7 +40,7 @@ func (ovn *OvnMasterController) getGatewayLoadBalancer(physicalGateway,
 	return loadBalancer, nil
 }
 
-func (ovn *OvnMasterController) createGatewaysVIP(protocol string, port, targetPort int32, ips []string) error {
+func (ovn *MasterController) createGatewaysVIP(protocol string, port, targetPort int32, ips []string) error {
 
 	logrus.Debugf("Creating Gateway VIP - %s, %d, %d, %v", protocol, port, targetPort, ips)
 

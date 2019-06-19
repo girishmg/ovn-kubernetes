@@ -1,4 +1,4 @@
-package cluster
+package ovn
 
 import (
 	"fmt"
@@ -111,19 +111,19 @@ var _ = Describe("Master Operations", func() {
 			Expect(err).NotTo(HaveOccurred())
 			defer f.Shutdown()
 
-			clusterController := NewOvnNodeController(fakeClient, f)
-			Expect(clusterController).NotTo(BeNil())
-			clusterController.TCPLoadBalancerUUID = tcpLBUUID
-			clusterController.UDPLoadBalancerUUID = udpLBUUID
+			masterController := NewMasterController(fakeClient, f)
+			Expect(masterController).NotTo(BeNil())
+			masterController.TCPLoadBalancerUUID = tcpLBUUID
+			masterController.UDPLoadBalancerUUID = udpLBUUID
 
 			_, ipnet, err := net.ParseCIDR(clusterCIDR)
 			Expect(err).NotTo(HaveOccurred())
-			clusterController.ClusterIPNet = append(clusterController.ClusterIPNet, CIDRNetworkEntry{
+			masterController.ClusterIPNet = append(masterController.ClusterIPNet, CIDRNetworkEntry{
 				CIDR:             ipnet,
 				HostSubnetLength: 24,
 			})
 
-			err = clusterController.StartClusterMaster("master")
+			err = masterController.StartClusterMaster("master")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fexec.CalledMatchesExpected()).To(BeTrue())
@@ -222,15 +222,15 @@ subnet=%s
 			Expect(err).NotTo(HaveOccurred())
 			defer f.Shutdown()
 
-			clusterController := NewOvnNodeController(fakeClient, f)
-			Expect(clusterController).NotTo(BeNil())
+			masterController := NewMasterController(fakeClient, f)
+			Expect(masterController).NotTo(BeNil())
 
 			// Initialize OVS/OVN connection methods
 			err = setupOVNMaster(masterNode.Name)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Let the real code run and ensure OVN database sync
-			err = clusterController.watchNodes()
+			err = masterController.watchNodes()
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fexec.CalledMatchesExpected()).To(BeTrue())

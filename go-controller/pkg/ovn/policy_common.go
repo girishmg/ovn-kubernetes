@@ -178,7 +178,7 @@ const (
 	ipBlockDenyPriority = "1010"
 )
 
-func (oc *OvnMasterController) addAllowACLFromNode(logicalSwitch string) error {
+func (oc *MasterController) addAllowACLFromNode(logicalSwitch string) error {
 	subnet, stderr, err := util.RunOVNNbctl("get", "logical_switch",
 		logicalSwitch, "other-config:subnet")
 	if err != nil {
@@ -214,7 +214,7 @@ func (oc *OvnMasterController) addAllowACLFromNode(logicalSwitch string) error {
 	return err
 }
 
-func (oc *OvnMasterController) syncNetworkPolicies(networkPolicies []interface{}) {
+func (oc *MasterController) syncNetworkPolicies(networkPolicies []interface{}) {
 	if oc.portGroupSupport {
 		oc.syncNetworkPoliciesPortGroup(networkPolicies)
 	} else {
@@ -223,7 +223,7 @@ func (oc *OvnMasterController) syncNetworkPolicies(networkPolicies []interface{}
 }
 
 // AddNetworkPolicy adds network policy and create corresponding acl rules
-func (oc *OvnMasterController) AddNetworkPolicy(policy *knet.NetworkPolicy) {
+func (oc *MasterController) AddNetworkPolicy(policy *knet.NetworkPolicy) {
 	if oc.portGroupSupport {
 		oc.addNetworkPolicyPortGroup(policy)
 	} else {
@@ -231,7 +231,7 @@ func (oc *OvnMasterController) AddNetworkPolicy(policy *knet.NetworkPolicy) {
 	}
 }
 
-func (oc *OvnMasterController) deleteNetworkPolicy(
+func (oc *MasterController) deleteNetworkPolicy(
 	policy *knet.NetworkPolicy) {
 	if oc.portGroupSupport {
 		oc.deleteNetworkPolicyPortGroup(policy)
@@ -241,7 +241,7 @@ func (oc *OvnMasterController) deleteNetworkPolicy(
 
 }
 
-func (oc *OvnMasterController) shutdownHandlers(np *namespacePolicy) {
+func (oc *MasterController) shutdownHandlers(np *namespacePolicy) {
 	for _, handler := range np.podHandlerList {
 		_ = oc.watchFactory.RemovePodHandler(handler)
 	}

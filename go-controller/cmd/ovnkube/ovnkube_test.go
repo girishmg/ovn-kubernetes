@@ -1,7 +1,7 @@
 package main
 
 import (
-	ovncluster "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cluster"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"net"
 	"testing"
 )
@@ -15,19 +15,19 @@ func TestParseClusterSubnetEntries(t *testing.T) {
 	tests := []struct {
 		name            string
 		cmdLineArg      string
-		clusterNetworks []ovncluster.CIDRNetworkEntry
+		clusterNetworks []ovn.CIDRNetworkEntry
 		expectedErr     bool
 	}{
 		{
 			name:            "Single CIDR correctly formatted",
 			cmdLineArg:      "10.132.0.0/26/28",
-			clusterNetworks: []ovncluster.CIDRNetworkEntry{{CIDR: returnIPNetPointers("10.132.0.0/26"), HostSubnetLength: 28}},
+			clusterNetworks: []ovn.CIDRNetworkEntry{{CIDR: returnIPNetPointers("10.132.0.0/26"), HostSubnetLength: 28}},
 			expectedErr:     false,
 		},
 		{
 			name:       "Two CIDRs correctly formatted",
 			cmdLineArg: "10.132.0.0/26/28,10.133.0.0/26/28",
-			clusterNetworks: []ovncluster.CIDRNetworkEntry{
+			clusterNetworks: []ovn.CIDRNetworkEntry{
 				{CIDR: returnIPNetPointers("10.132.0.0/26"), HostSubnetLength: 28},
 				{CIDR: returnIPNetPointers("10.133.0.0/26"), HostSubnetLength: 28},
 			},
@@ -36,7 +36,7 @@ func TestParseClusterSubnetEntries(t *testing.T) {
 		{
 			name:            "Test that defaulting to hostsubnetlength 8 still works",
 			cmdLineArg:      "10.128.0.0/14",
-			clusterNetworks: []ovncluster.CIDRNetworkEntry{{CIDR: returnIPNetPointers("10.128.0.0/14"), HostSubnetLength: 24}},
+			clusterNetworks: []ovn.CIDRNetworkEntry{{CIDR: returnIPNetPointers("10.128.0.0/14"), HostSubnetLength: 24}},
 			expectedErr:     false,
 		},
 		{
@@ -84,7 +84,7 @@ func TestCidrsOverlap(t *testing.T) {
 	tests := []struct {
 		name           string
 		cidr           *net.IPNet
-		cidrList       []ovncluster.CIDRNetworkEntry
+		cidrList       []ovn.CIDRNetworkEntry
 		expectedOutput bool
 	}{
 		{
@@ -96,7 +96,7 @@ func TestCidrsOverlap(t *testing.T) {
 		{
 			name: "non-overlapping",
 			cidr: returnIPNetPointers("10.132.0.0/26"),
-			cidrList: []ovncluster.CIDRNetworkEntry{
+			cidrList: []ovn.CIDRNetworkEntry{
 				{CIDR: returnIPNetPointers("10.133.0.0/26")},
 			},
 			expectedOutput: false,
@@ -104,7 +104,7 @@ func TestCidrsOverlap(t *testing.T) {
 		{
 			name: "cidr equal to an entry in the list",
 			cidr: returnIPNetPointers("10.132.0.0/26"),
-			cidrList: []ovncluster.CIDRNetworkEntry{
+			cidrList: []ovn.CIDRNetworkEntry{
 				{CIDR: returnIPNetPointers("10.132.0.0/26")},
 			},
 			expectedOutput: true,
@@ -112,7 +112,7 @@ func TestCidrsOverlap(t *testing.T) {
 		{
 			name: "proposed cidr is a proper subset of a list entry",
 			cidr: returnIPNetPointers("10.132.0.0/26"),
-			cidrList: []ovncluster.CIDRNetworkEntry{
+			cidrList: []ovn.CIDRNetworkEntry{
 				{CIDR: returnIPNetPointers("10.0.0.0/8")},
 			},
 			expectedOutput: true,
@@ -120,7 +120,7 @@ func TestCidrsOverlap(t *testing.T) {
 		{
 			name: "proposed cidr is a proper superset of a list entry",
 			cidr: returnIPNetPointers("10.0.0.0/8"),
-			cidrList: []ovncluster.CIDRNetworkEntry{
+			cidrList: []ovn.CIDRNetworkEntry{
 				{CIDR: returnIPNetPointers("10.133.0.0/26")},
 			},
 			expectedOutput: true,
@@ -128,7 +128,7 @@ func TestCidrsOverlap(t *testing.T) {
 		{
 			name: "proposed cidr overlaps a list entry",
 			cidr: returnIPNetPointers("10.1.0.0/14"),
-			cidrList: []ovncluster.CIDRNetworkEntry{
+			cidrList: []ovn.CIDRNetworkEntry{
 				{CIDR: returnIPNetPointers("10.0.0.0/15")},
 			},
 			expectedOutput: true,

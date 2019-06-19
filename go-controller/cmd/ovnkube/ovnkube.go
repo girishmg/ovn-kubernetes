@@ -195,7 +195,7 @@ func runOvnKube(ctx *cli.Context) error {
 			if runtime.GOOS == "windows" {
 				panic("Windows is not supported as master node")
 			}
-			ovnMasterController := ovn.NewOvnMasterController(clientset, factory)
+			ovnMasterController := ovn.NewMasterController(clientset, factory)
 			ovnMasterController.ClusterIPNet, err = parseClusterSubnetEntries(ctx.String("cluster-subnet"))
 			if err != nil {
 				panic(err.Error())
@@ -221,11 +221,9 @@ func runOvnKube(ctx *cli.Context) error {
 
 		// run forever
 		select {}
-	} else {
-		panic("Need to run ovnkube in either master and/or node mode.")
 	}
+	return fmt.Errorf("need to run ovnkube in either master and/or node mode")
 
-	return nil
 }
 
 // parseClusterSubnetEntries returns the parsed set of CIDRNetworkEntries passed by the user on the command line
