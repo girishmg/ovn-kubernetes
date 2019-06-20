@@ -65,9 +65,7 @@ func (oc *MasterController) StartClusterMaster(masterNodeName string) error {
 		return err
 	}
 
-	_, _, err = util.RunOVNNbctl("--columns=_uuid", "list",
-		"port_group")
-	if err == nil {
+	if _, _, err := util.RunOVNNbctl("--columns=_uuid", "list", "port_group"); err == nil {
 		oc.portGroupSupport = true
 	}
 
@@ -89,7 +87,6 @@ func setupOVNMaster(nodeName string) error {
 	}
 	return nil
 }
-
 
 // SetupMaster creates the central router and load-balancers for the network
 func (oc *MasterController) SetupMaster(masterNodeName string) error {
