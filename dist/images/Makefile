@@ -15,6 +15,14 @@ all: bld
 	# docker push docker.io/ovnkube/ovn-daemonset-u:latest
 	./daemonset.sh --image=docker.io/ovnkube/ovn-daemonset-u:latest
 
+ubuntu-ha: bld
+	docker build -t ovn-kube-u -f Dockerfile.ubuntu .
+	docker build -t ovn-kube-ha-u -f Dockerfile-ha.ubuntu .
+	# This is the default in the ovnkube*.yaml files
+	# docker login -u ovnkube docker.io/ovnkube
+	# docker push docker.io/ovnkube/ovn-daemonset-u:latest
+	./daemonset.sh --image=docker.io/ovnkube/ovn-daemonset-u:latest
+
 centos: bld
 	docker build -t ovn-daemonset .
 	docker tag ovn-daemonset docker.io/ovnkube/ovn-daemonset:latest

@@ -20,7 +20,6 @@
 #    ovn-master     Runs ovnkube in master mode (v2, v3)
 #    ovn-controller Runs ovn controller (v2, v3)
 #    ovn-node       Runs ovnkube in node mode (v2, v3)
-#    run-ovn-db-cluster Runs NB/SB OVSDB in pacemaker/corosync cluster (v3)
 #
 #    display        Displays log files
 #    display_env    Displays environment variables
@@ -56,12 +55,13 @@
 # OVN_LOG_NB - log level (ovn-ctl default: -vconsole:off -vfile:info)
 # OVN_LOG_SB - log level (ovn-ctl default: -vconsole:off -vfile:info)
 # OVN_LOG_CONTROLLER - log level (ovn-ctl default: -vconsole:off -vfile:info)
-# OVN_DB_HA_VIP - the virtual IP address to be used by ovn-controller, ovn-northd,
-#                 and other OVN client-side utilities to connect to the OVN DB.
 
 # The argument to the command is the operation to be performed
 # ovn-northd ovn-master ovn-controller ovn-node display display_env ovn_debug
 # default is compatibility mode with version 1 daemonsets
+
+. "./ovnkube-lib" || exit 1
+
 cmd=${1:-"start-ovn"}
 
 # There is a single image for both master nodes and compute nodes
@@ -80,32 +80,11 @@ logpost=$(date +%F-%T)
 ovn_nb_log_file=${logdir}/ovsdb-server-nb-${logpost}.log
 ovn_sb_log_file=${logdir}/ovsdb-server-sb-${logpost}.log
 
-# ovnkube.sh version (update when script changes - v.x.y)
-ovnkube_version="3"
-
-# The daemonset version must be compatible with this script.
-# The default when OVN_DAEMONSET_VERSION is not set is version 1
-ovn_daemonset_version=${OVN_DAEMONSET_VERSION:-"1"}
-
-# hostname is the host's hostname when using host networking,
-# This is useful on the master node
-# otherwise it is the container ID (useful for debugging).
-ovn_pod_host=$(hostname)
-
 # The ovs user id, by default it is going to be root:root
 ovs_user_id=${OVS_USER_ID:-""}
 
 # ovs options
 ovs_options=${OVS_OPTIONS:-""}
-
-if [[ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]]
-then
-  k8s_token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-else
-  k8s_token=${K8S_TOKEN}
-fi
-
-K8S_CACERT=${K8S_CACERT:-/var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
 
 # ovn-northd - /etc/sysconfig/ovn-northd
 ovn_northd_opts=${OVN_NORTHD_OPTS:-"--db-nb-sock=/var/run/openvswitch/ovnnb_db.sock --db-sb-sock=/var/run/openvswitch/ovnsb_db.sock"}
@@ -124,15 +103,9 @@ ovn_gateway_opts=${OVN_GATEWAY_OPTS:-""}
 net_cidr=${OVN_NET_CIDR:-10.128.0.0/14/23}
 svc_cidr=${OVN_SVC_CIDR:-172.30.0.0/16}
 
-ovn_kubernetes_namespace=${OVN_KUBERNETES_NAMESPACE:-ovn-kubernetes}
-
 # host on which ovnkube-db POD is running and this POD contains both
 # OVN NB and SB DB running in their own container
 ovn_db_host=""
-
-# in the case where OVN DBs are configured for Active/Standby HA using corosync/pacemaker,
-# then ovn_db_ha_vip represents the Virtual IP address that frontend's both NB and SB DBs
-ovn_db_ha_vip=${OVN_DB_HA_VIP:-""}
 
 # =========================================
 
@@ -180,19 +153,6 @@ ready_to_start_node () {
   return 0
 }
 # wait_for_event ready_to_start_node
-
-
-# check that daemonset version is among expected versions
-check_ovn_daemonset_version () {
-  ok=$1
-  for v in ${ok} ; do
-    if [[ $v == ${ovn_daemonset_version} ]] ; then
-      return 0
-    fi
-  done
-  echo "VERSION MISMATCH expect ${ok}, daemonset is version ${ovn_daemonset_version}"
-  exit 1
-}
 
 # The ovn vars are based on the IP address of the K8s node
 # on which ovnkube-db is running on.
@@ -436,42 +396,6 @@ ovs-server () {
   done
 }
 
-# create the ovnkube_db endpoint for other pods to query the OVN DB IP
-create_ovnkube_db_ep () {
-  # delete any endpoint by name ovnkube-db
-  kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
-    delete ep -n ${ovn_kubernetes_namespace} ovnkube-db 2>/dev/null
-
-  # create a new endpoint for the headless onvkube-db service without selectors
-  # using the current host has the endpoint IP or if the VIP is set use it instead
-  if [[  ${ovn_db_ha_vip} != "" ]] ; then
-    ovn_db_host=${ovn_db_ha_vip}
-  else
-    ovn_db_host=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
-  fi
-  kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} apply -f - << EOF
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: ovnkube-db
-  namespace: ${ovn_kubernetes_namespace}
-subsets:
-  - addresses:
-      - ip: ${ovn_db_host}
-    ports:
-    - name: north
-      port: 6641
-      protocol: TCP
-    - name: south
-      port: 6642
-      protocol: TCP
-EOF
-    if [[ $? != 0 ]] ; then
-        echo "Failed to create endpoint with host ${ovn_db_host} for ovnkube-db service"
-        exit 1
-    fi
-}
-
 # v3 - run nb_ovsdb in a separate container
 nb-ovsdb () {
   trap 'kill $(jobs -p); exit 0' TERM
@@ -529,166 +453,6 @@ sb-ovsdb () {
 
   pid_health /var/run/openvswitch/ovnsb_db.pid ${ovn_tail_pid}
   echo "=============== run sb_ovsdb ========== terminated"
-}
-
-# Check the ovndb_server pcs resource status. return 2 if
-# the status is unknown, return 1 if the status is
-# stopped, return 0 if status is started (master or slave)
-crm_node_status () {
-  retcode=2
-  crm stat  | egrep 'Masters|Slaves|Stopped' | awk '$1=$1' > /tmp/crm_stat.$$
-  if [[ $? -ne 0 ]] ; then
-    echo Command "crm stat" failed
-    return $retcode
-  fi
-
-  IFS=' ' read -a master_nodes <<< "$(awk -F'[][]' '{if ($1 ~ /Slaves/) print $2;}' /tmp/crm_stat.$$)"
-  IFS=' ' read -a slave_nodes <<< "$(awk -F'[][]' '{if ($1 ~ /Masters/) print $2;}' /tmp/crm_stat.$$)"
-  IFS=' ' read -a stopped_nodes <<< "$(awk -F'[][]' '{if ($1 ~ /Stopped/) print $2;}' /tmp/crm_stat.$$)"
-  started_nodes=("${master_nodes[@]}" "${slave_nodes[@]}")
-  if [[ " ${master_nodes[@]} " =~ " ${ovn_pod_host} " ]]; then
-    retcode=0
-  elif [[ " ${slave_nodes[@]} " =~ " ${ovn_pod_host} " ]]; then
-    retcode=0
-  elif [[ " ${stopped_nodes[@]} " =~ " ${ovn_pod_host} " ]]; then
-    retcode=1
-  fi
-  rm -rf /tmp/crm_stat.$$
-  echo "cluster status $retcode"
-  return $retcode
-}
-
-config_corosync () {
-  # get all the nodes that are participating in hosting the OVN DBs
-  cluster_nodes=$(kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
-    get nodes --selector=openvswitch.org/ovnkube-db=true \
-    -o=jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)
-  nnodes=$(echo $cluster_nodes |wc -w)
-  if [[ $nnodes -lt 2 ]]; then
-    echo "at least 2 nodes need to be configured"
-    exit 1
-  fi
-  echo cluster_nodes=$cluster_nodes
-
-  cat << EOF > /etc/corosync/corosync.conf
-totem {
-  version: 2
-  cluster_name: ovn-central-cluster
-  transport: udpu
-  secauth: off
-}
-quorum {
-  provider: corosync_votequorum
-}
-logging {
-  to_logfile: yes
-  logfile: /var/log/corosync/corosync.log
-  to_syslog: yes
-  timestamp: on
-}
-nodelist {
-`for h in $cluster_nodes; do printf "  node {\n    ring0_addr: $h\n  }\n"; done`
-}
-EOF
-}
-
-service_start() {
-  for svc in "$@"; do
-    service ${svc} start >> /dev/null 2>&1
-  done
-}
-
-service_healthy() {
-  for svc in "$@"; do
-    service ${svc} status | grep "is running" >> /dev/null 2>&1
-    if [[ $? -ne 0 ]]; then
-      echo "service ${svc} is not started"
-      return 1
-    fi
-  done
-  return 0
-}
-
-# v3 - Runs ovn NB/SB DB pacemaker/corosync cluster
-run-ovn-db-cluster () {
-  if [[ ${ovn_db_ha_vip} == "" ]] ; then
-    echo "Exiting since the Virtual IP to be used for OVN DBs has not been provided"
-    return 1
-  fi
-  trap stop-ovn-db-cluster TERM
-
-  config_corosync
-
-  service_start pcsd corosync pacemaker
-  service_healthy pcsd corosync pacemaker
-  if [[ $? -ne 0 ]]; then
-    exit 11
-  fi
-
-  pcs property set stonith-enabled=false > /dev/null 2>&1
-  pcs property set no-quorum-policy=ignore > /dev/null 2>&1
-  pcs resource create VirtualIP ocf:heartbeat:IPaddr2 ip=${ovn_db_ha_vip} op monitor interval=30s > /dev/null 2>&1
-  pcs resource create ovndb_servers ocf:ovn:ovndb-servers master_ip=${ovn_db_ha_vip}  \
-    inactive_probe_interval=0 ovn_ctl=/usr/share/openvswitch/scripts/ovn-ctl \
-    op monitor interval="60s" timeout="50s" op monitor role=Master interval="15s" > /dev/null 2>&1
-  pcs resource master ovndb_servers-master ovndb_servers meta notify="true" > /dev/null 2>&1
-  pcs constraint order promote ovndb_servers-master then VirtualIP > /dev/null 2>&1
-  pcs constraint colocation add VirtualIP with master ovndb_servers-master score=INFINITY > /dev/null 2>&1
-
-  retries=0
-  started=0
-  while true; do
-    # Check resource status on this node
-    crm_node_status
-    ret=$?
-
-    if [[ $started -eq 0 ]]; then
-      if [[ $ret -eq 0 ]]; then
-        echo "OVN DB HA cluster started after ${retries} retries"
-        started=1
-
-        # now we can create the ovnkube-db endpoint with the ${ovn_db_ha_vip} as the IP address. with that
-        # the waiting ovnkube-node and ovnkube-master PODs will continue
-        create_ovnkube_db_ep
-        echo "ovn_db_host ${ovn_db_host}"
-      elif [[ $ret -eq 1 ]]; then
-	    echo pcs node unstandby ${ovn_pod_host}
-        pcs node unstandby ${ovn_pod_host}
-      elif [[ "${retries}" -gt 60 ]]; then
-        echo "after 60 retries, Corosync/Packemaker OVN DB cluster didn't start"
-        exit 11
-      fi
-    elif [[ $ret -ne 0 ]]; then
-      # Service stopped for some reason, reset the retry and restart
-      echo "Unknown OVN DB HA cluster status. Attempting to restart the cluster"
-      started=0
-      retries=0
-    fi
-    sleep 1
-    (( retries += 1 ))
-  done
-}
-
-# v3 - standby ovn NB/SB DB cluster on this node
-# this will gracefully stop the cluster on this
-# node and unplumb the VIP if needed
-stop-ovn-db-cluster () {
-  echo pcs node standby ${ovn_pod_host}
-  pcs node standby ${ovn_pod_host}
-  retries=0
-  while true; do
-    crm_node_status
-    ret=$?
-    if [[ $ret -ne 0 ]] ; then
-      break
-    fi
-    (( retries += 1 ))
-    if [[ "${retries}" -gt 30 ]]; then
-      echo "error: OVN DB cluster failed to be stopped gracefully"
-      break
-    fi
-    sleep 1
-  done
 }
 
 # v3 - Runs northd on master. Does not run nb_ovsdb, and sb_ovsdb
@@ -976,7 +740,6 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
 # ovn-master     - master node only (v2 v3)
 # ovn-controller - all nodes (v2 v3)
 # ovn-node       - all nodes (v2 v3)
-# run-ovn-db-cluster - Runs NB/SB OVSDB in pacemaker/corosync cluster (v3)
 
   case ${cmd} in
     "nb-ovsdb")        # pod ovnkube-db container nb-ovsdb
@@ -1002,9 +765,6 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
     ;;
     "ovn-northd")
 	ovn-northd
-    ;;
-    "run-ovn-db-cluster")
-    run-ovn-db-cluster
     ;;
     "display_env")
         display_env
@@ -1032,7 +792,7 @@ echo "================== ovnkube.sh --- version: ${ovnkube_version} ============
 	echo "invalid command ${cmd}"
 	echo "valid v1 commands: start-ovn display_env display ovn_debug"
 	echo "valid v2 commands: ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug"
-	echo "valid v3 commands: ovs-server nb-ovsdb sb-ovsdb run-ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug run-ovn-db-cluster"
+	echo "valid v3 commands: ovs-server nb-ovsdb sb-ovsdb run-ovn-northd ovn-master ovn-controller ovn-node display_env display ovn_debug"
 	exit 0
   esac
 

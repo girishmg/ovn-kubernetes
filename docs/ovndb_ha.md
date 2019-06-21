@@ -26,6 +26,7 @@ yaml file from the dist/templates/ovnkube-db-ha.yam.j2 template file by running
 export VIRTUAL_IP=<free_ip_address_from_k8s_node_subnet>
 cd $HOME/work/src/github.com/ovn-org/ovn-kubernetes/dist/images
 ./daemonset.sh --image=docker.io/ovnkube/ovn-daemonset-u:latest \
+    --ha-image=docker.io/ovnkube/ovn-ha-daemonset-u:latest \
     --k8s-apiserver=https://$MASTER_IP:6443 \
     --net-cidr=192.168.0.0/16 --svc-cidr=172.16.1.0/24 \
     --db-replicas=3 --db-ha-vip=$VIRTUAL_IP

@@ -11,11 +11,8 @@
 FROM ubuntu:18.04
 
 USER root
-# We need this since some of the packages below expects access to terminal
-ARG DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y iptables iproute2 curl software-properties-common setpriv \
-    pcs pacemaker fence-agents crmsh
+RUN apt-get update && apt-get install -y iptables iproute2 curl software-properties-common setpriv
 
 # We do not have much control over the exact version of OVS/OVN that can be
 # obtained from upstream Ubuntu. guru@ovn.org maintains more latest versions of
@@ -43,6 +40,7 @@ COPY ovn-k8s-cni-overlay /usr/libexec/cni/ovn-k8s-cni-overlay
 # ovnkube.sh is the entry point. This script examines environment
 # variables to direct operation and configure ovn
 COPY ovnkube.sh /root/
+COPY ovnkube-lib /root/
 COPY ovn-debug.sh /root/
 # override the pkg's ovn_k8s.conf with this local copy
 COPY ovn_k8s.conf /etc/openvswitch/ovn_k8s.conf

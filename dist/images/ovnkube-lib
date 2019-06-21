@@ -1,0 +1,91 @@
+#!/bin/bash
+
+# This script is utility function library for ovnkube scripts
+# Environment variables are used to customize operation
+# K8S_APISERVER - hostname:port (URL)of the real apiserver, not the service address
+#
+# Optional:
+# OVN_KUBERNETES_NAMESPACE - k8s namespace
+# OVN_DAEMONSET_VERSION - version match daemonset and image - v2, v3
+# K8S_TOKEN - the apiserver token. Automatically detected when running in a pod
+# K8S_CACERT - the apiserver CA. Automatically detected when running in a pod
+# OVN_DB_HA_VIP - the virtual IP address to be used by ovn-controller, ovn-northd,
+#                 and other OVN client-side utilities to connect to the OVN DB.
+
+# =========================================
+# ovnkube script version (update when script changes - v.x.y)
+ovnkube_version="3"
+
+# The daemonset version must be compatible with this script.
+# The default when OVN_DAEMONSET_VERSION is not set is version 1
+ovn_daemonset_version=${OVN_DAEMONSET_VERSION:-"1"}
+
+# hostname is the host's hostname when using host networking,
+# This is useful on the master node
+# otherwise it is the container ID (useful for debugging).
+ovn_pod_host=$(hostname)
+
+# in the case where OVN DBs are configured for Active/Standby HA using corosync/pacemaker,
+# then ovn_db_ha_vip represents the Virtual IP address that frontend's both NB and SB DBs
+ovn_db_ha_vip=${OVN_DB_HA_VIP:-""}
+
+if [[ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]]
+then
+  k8s_token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+else
+  k8s_token=${K8S_TOKEN}
+fi
+
+K8S_CACERT=${K8S_CACERT:-/var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+
+ovn_kubernetes_namespace=${OVN_KUBERNETES_NAMESPACE:-ovn-kubernetes}
+
+# check that daemonset version is among expected versions
+check_ovn_daemonset_version () {
+  ok=$1
+  for v in ${ok} ; do
+    if [[ $v == ${ovn_daemonset_version} ]] ; then
+      return 0
+    fi
+  done
+  echo "VERSION MISMATCH expect ${ok}, daemonset is version ${ovn_daemonset_version}"
+  exit 1
+}
+
+# create the ovnkube_db endpoint for other pods to query the OVN DB IP
+create_ovnkube_db_ep () {
+  local ovn_db_ip
+  # delete any endpoint by name ovnkube-db
+  kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
+    delete ep -n ${ovn_kubernetes_namespace} ovnkube-db 2>/dev/null
+
+  # create a new endpoint for the headless onvkube-db service without selectors
+  # using the current host has the endpoint IP or if the VIP is set use it instead
+  if [[  ${ovn_db_ha_vip} != "" ]] ; then
+    ovn_db_ip=${ovn_db_ha_vip}
+  else
+    ovn_db_ip=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
+  fi
+  echo ovn_db_host $ovn_db_ip
+  kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} apply -f - << EOF
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: ovnkube-db
+  namespace: ${ovn_kubernetes_namespace}
+subsets:
+  - addresses:
+      - ip: ${ovn_db_ip}
+    ports:
+    - name: north
+      port: 6641
+      protocol: TCP
+    - name: south
+      port: 6642
+      protocol: TCP
+EOF
+    if [[ $? != 0 ]] ; then
+        echo "Failed to create endpoint with host ${ovn_db_ip} for ovnkube-db service"
+        exit 1
+    fi
+}

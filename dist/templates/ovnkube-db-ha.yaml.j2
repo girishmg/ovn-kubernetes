@@ -62,9 +62,9 @@ spec:
       containers:
       # ovsdb with corosync in one container - v3
       - name: ovsdb
-        image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
+        image: "{{ ovn_ha_image | default('docker.io/ovnkube/ovn-ha-daemonset:latest') }}"
         imagePullPolicy: "{{ ovn_image_pull_policy | default('IfNotPresent') }}"
-        command: ["/root/ovnkube.sh", "run-ovn-db-cluster"]
+        command: ["/root/ovnkube-ha.sh", "run-ovn-db-cluster"]
 
         securityContext:
           runAsUser: 0

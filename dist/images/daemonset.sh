@@ -8,6 +8,7 @@ set -e
 # The script expands the templates into yaml files in ../yaml
 
 OVN_IMAGE=""
+OVN_HA_IMAGE=""
 OVN_IMAGE_PULL_POLICY=""
 OVN_NET_CIDR=""
 OVN_SVC_DIDR=""
@@ -23,6 +24,9 @@ while [ "$1" != "" ]; do
     case $PARAM in
         --image)
             OVN_IMAGE=$VALUE
+            ;;
+        --ha-image)
+            OVN_HA_IMAGE=$VALUE
             ;;
         --image-pull-policy)
             OVN_IMAGE_PULL_POLICY=$VALUE
@@ -72,6 +76,15 @@ else
 fi
 echo "image: ${image}"
 
+ha_image=""
+if [[ ${OVN_HA_IMAGE} == "" ]]
+then
+    ha_image=$(awk -F = '/^ovn_ha_image=/{ print $2 }' ../ansible/hosts | sed 's/\"//g')
+else
+    ha_image=$OVN_HA_IMAGE
+fi
+echo "ha_image: ${ha_image}"
+
 if [[ ${OVN_IMAGE_PULL_POLICY} == "" ]]
 then
     policy=$(awk -F = '/^ovn_image_pull_policy/{ print $2 }' ../ansible/hosts)
@@ -94,6 +107,7 @@ echo "ovn_db_ha_vip: ${ovn_db_ha_vip}"
 
 # Simplified expansion of template 
 image_str="{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
+ha_image_str="{{ ovn_ha_image | default('docker.io/ovnkube/ovn-ha-daemonset:latest') }}"
 policy_str="{{ ovn_image_pull_policy | default('IfNotPresent') }}"
 ovn_gateway_opts_repl="{{ ovn_gateway_opts }}"
 ovn_db_replicas_repl="{{ ovn_db_replicas | default(3) }}"
@@ -109,10 +123,14 @@ s,${policy_str},${policy}," ../templates/ovnkube-master.yaml.j2 > ../yaml/ovnkub
 sed "s,${image_str},${image},
 s,${policy_str},${policy}," ../templates/ovnkube-db.yaml.j2 > ../yaml/ovnkube-db.yaml
 
-sed "s,${image_str},${image},
-s,${ovn_db_replicas_repl},${ovn_db_replicas},
-s,${ovn_db_ha_vip_repl},${ovn_db_ha_vip},
-s,${policy_str},${policy}," ../templates/ovnkube-db-ha.yaml.j2 > ../yaml/ovnkube-db-ha.yaml
+# only generate ovnkube-db-ha yaml if OVN_HA_IMAGE is specified
+if [[ ${ha_image} != "" ]]
+then
+    sed "s,${ha_image_str},${ha_image},
+    s,${ovn_db_replicas_repl},${ovn_db_replicas},
+    s,${ovn_db_ha_vip_repl},${ovn_db_ha_vip},
+    s,${policy_str},${policy}," ../templates/ovnkube-db-ha.yaml.j2 > ../yaml/ovnkube-db-ha.yaml
+fi
 
 # ovn-setup.yaml
 # net_cidr=10.128.0.0/14/23
