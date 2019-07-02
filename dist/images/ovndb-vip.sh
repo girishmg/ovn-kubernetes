@@ -15,7 +15,7 @@
 # Environment variables are used to customize operation
 # Required:
 # K8S_APISERVER - hostname:port (URL)of the real apiserver, not the service address
-# OVN_DB_HA_VIP - the virtual IP address to be used by ovn-controller, ovn-northd,
+# OVN_DB_VIP - the virtual IP address to be used by ovn-controller, ovn-northd,
 #                 and other OVN client-side utilities to connect to the OVN DB.
 #
 # Optional:
@@ -37,7 +37,7 @@ ovn_pod_host=$(hostname)
 
 # in the case where OVN DBs are configured for Active/Standby HA using corosync/pacemaker,
 # then ovndb_vip represents the Virtual IP address that frontend's both NB and SB DBs
-ovndb_vip=${OVN_DB_HA_VIP:-""}
+ovndb_vip=${OVN_DB_VIP:-""}
 
 if [[ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]]
 then
