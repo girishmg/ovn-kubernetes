@@ -111,7 +111,7 @@ func (cluster *OvnClusterController) initGateway(
 	return err
 }
 
-func (cluster *OvnClusterController) cleanupGateway(nodeName string) error {
+func cleanupGateway(nodeName string) error {
 	switch config.Gateway.Mode {
 	case config.GatewayModeLocal:
 		return cleanupLocalnetGateway()

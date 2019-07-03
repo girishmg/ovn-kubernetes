@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"io"
 	"io/ioutil"
 	"net"
@@ -189,15 +190,13 @@ func runOvnKube(ctx *cli.Context) error {
 
 	master := ctx.String("init-master")
 	node := ctx.String("init-node")
-	clusterController := ovncluster.NewClusterController(clientset, factory)
-
 	cleanupNode := ctx.String("cleanup-node")
 	if cleanupNode != "" {
 		if master != "" || node != "" {
 			panic("Cannot specify cleanup-node together with 'init-node or 'init-master'.")
 		}
 
-		err = clusterController.CleanupClusterNode(cleanupNode)
+		err = ovncluster.CleanupClusterNode(&kube.Kube{KClient: clientset}, cleanupNode)
 		if err != nil {
 			logrus.Errorf(err.Error())
 			panic(err.Error())
@@ -206,6 +205,7 @@ func runOvnKube(ctx *cli.Context) error {
 	}
 
 	if master != "" || node != "" {
+		clusterController := ovncluster.NewClusterController(clientset, factory)
 		clusterController.ClusterIPNet, err = parseClusterSubnetEntries(ctx.String("cluster-subnet"))
 		if err != nil {
 			panic(err.Error())

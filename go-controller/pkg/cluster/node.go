@@ -13,6 +13,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -164,18 +165,16 @@ func (cluster *OvnClusterController) watchConfigEndpoints() error {
 
 // CleanupClusterNode cleans up OVS resources on the k8s node on ovnkube-node daemonset deletion.
 // This is going to be a best effort cleanup.
-func (cluster *OvnClusterController) CleanupClusterNode(name string) error {
+func CleanupClusterNode(kubeClient *kube.Kube, name string) error {
 	var err error
 	var node *kapi.Node
-	var nodeName string
 
-	node, err = cluster.Kube.GetNode(name)
+	node, err = kubeClient.GetNode(name)
 	if err != nil {
 		logrus.Errorf("Failed to get kubernetes node %q, error: %v", name, err)
 		return nil
 	}
-	nodeName = strings.ToLower(node.Name)
-	err = cluster.cleanupGateway(nodeName)
+	err = cleanupGateway(strings.ToLower(node.Name))
 	if err != nil {
 		logrus.Errorf("Failed to cleanup Gateway, error: %v", err)
 	}
