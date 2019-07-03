@@ -15,7 +15,7 @@ import (
 )
 
 func addService(service *kapi.Service, inport, outport, gwBridge string) {
-	if service.Spec.Type != kapi.ServiceTypeNodePort {
+	if !util.ServiceTypeHasNodePort(service) {
 		return
 	}
 
@@ -38,7 +38,7 @@ func addService(service *kapi.Service, inport, outport, gwBridge string) {
 }
 
 func deleteService(service *kapi.Service, inport, gwBridge string) {
-	if service.Spec.Type != kapi.ServiceTypeNodePort {
+	if !util.ServiceTypeHasNodePort(service) {
 		return
 	}
 
@@ -80,7 +80,7 @@ func syncServices(services []interface{}, gwBridge, gwIntf string) {
 			continue
 		}
 
-		if service.Spec.Type != kapi.ServiceTypeNodePort ||
+		if !util.ServiceTypeHasNodePort(service) ||
 			len(service.Spec.Ports) == 0 {
 			continue
 		}
@@ -314,8 +314,14 @@ func initSharedGateway(
 		return fmt.Errorf("failed to set up shared interface gateway: %v", err)
 	}
 
+	var lspArgs []string
+	if config.Gateway.VLANID > 0 {
+		lspArgs = []string{"--", "set", "logical_switch_port",
+			ifaceID, fmt.Sprintf("tag_request=%d", config.Gateway.VLANID)}
+	}
+
 	err = util.GatewayInit(clusterIPSubnet, nodeName, ifaceID, ipAddress,
-		macAddress, gwNextHop, subnet, true, config.Gateway.VLANID)
+		macAddress, gwNextHop, subnet, true, lspArgs)
 	if err != nil {
 		return fmt.Errorf("failed to init shared interface gateway: %v", err)
 	}
@@ -340,5 +346,22 @@ func initSharedGateway(
 		}
 	}
 
+	return nil
+}
+
+func cleanupSharedGateway() error {
+	// NicToBridge() may be created before-hand, only delete the patch port here
+	stdout, stderr, err := util.RunOVSVsctl("--columns=name", "--no-heading", "find", "port",
+		"external_ids:ovn-localnet-port!=_")
+	if err != nil {
+		return fmt.Errorf("Failed to get ovn-localnet-port port stderr:%s (%v)", stderr, err)
+	}
+	ports := strings.Fields(strings.Trim(stdout, "\""))
+	for _, port := range ports {
+		_, stderr, err := util.RunOVSVsctl("--if-exists", "del-port", strings.Trim(port, "\""))
+		if err != nil {
+			return fmt.Errorf("Failed to delete port %s stderr:%s (%v)", port, stderr, err)
+		}
+	}
 	return nil
 }

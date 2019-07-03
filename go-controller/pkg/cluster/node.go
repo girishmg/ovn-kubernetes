@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -159,4 +161,29 @@ func (cluster *OvnNodeController) watchConfigEndpoints() error {
 			},
 		}, nil)
 	return err
+}
+
+// CleanupClusterNode cleans up OVS resources on the k8s node on ovnkube-node daemonset deletion.
+// This is going to be a best effort cleanup.
+func CleanupClusterNode(kubeClient *kube.Kube, name string) error {
+	var err error
+	var node *kapi.Node
+
+	node, err = kubeClient.GetNode(name)
+	if err != nil {
+		logrus.Errorf("Failed to get kubernetes node %q, error: %v", name, err)
+		return nil
+	}
+	err = cleanupGateway(strings.ToLower(node.Name))
+	if err != nil {
+		logrus.Errorf("Failed to cleanup Gateway, error: %v", err)
+	}
+
+	// Make sure br-int is deleted, the management internal port is also deleted at the same time.
+	stdout, stderr, err := util.RunOVSVsctl("--", "--if-exists", "del-br", "br-int")
+	if err != nil {
+		logrus.Errorf("Failed to delete bridge br-int, stdout: %q, stderr: %q, error: %v", stdout, stderr, err)
+	}
+
+	return nil
 }

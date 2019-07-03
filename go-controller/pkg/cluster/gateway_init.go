@@ -68,7 +68,14 @@ loop:
 
 func (cluster *OvnNodeController) initGateway(
 	nodeName string, clusterIPSubnet []string, subnet string) error {
-	if config.Gateway.Mode == config.GatewayModeLocalnet {
+	if config.Gateway.NodeportEnable {
+		err := initLoadBalancerHealthChecker(nodeName, cluster.watchFactory)
+		if err != nil {
+			return err
+		}
+	}
+
+	if config.Gateway.Mode == config.GatewayModeLocal {
 		return initLocalnetGateway(nodeName, clusterIPSubnet, subnet,
 			cluster.watchFactory)
 	}
@@ -91,15 +98,26 @@ func (cluster *OvnNodeController) initGateway(
 		}
 	}
 
+	var err error
 	if config.Gateway.Mode == config.GatewayModeSpare {
-		return initSpareGateway(nodeName, clusterIPSubnet, subnet,
+		err = initSpareGateway(nodeName, clusterIPSubnet, subnet,
 			gatewayNextHop, gatewayIntf)
+	} else if config.Gateway.Mode == config.GatewayModeShared {
+		err = initSharedGateway(nodeName, clusterIPSubnet, subnet,
+			gatewayNextHop, gatewayIntf, cluster.watchFactory)
 	}
 
-	err := initSharedGateway(nodeName, clusterIPSubnet, subnet,
-		gatewayNextHop, gatewayIntf, cluster.watchFactory)
-	if err != nil {
-		return err
+	return err
+}
+
+func cleanupGateway(nodeName string) error {
+	switch config.Gateway.Mode {
+	case config.GatewayModeLocal:
+		return cleanupLocalnetGateway()
+	case config.GatewayModeSpare:
+		return cleanupSpareGateway(config.Gateway.Interface, nodeName)
+	case config.GatewayModeShared:
+		return cleanupSharedGateway()
 	}
 	return nil
 }

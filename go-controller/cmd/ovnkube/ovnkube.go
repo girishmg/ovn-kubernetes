@@ -20,6 +20,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cluster"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -189,6 +190,19 @@ func runOvnKube(ctx *cli.Context) error {
 
 	master := ctx.String("init-master")
 	node := ctx.String("init-node")
+	cleanupNode := ctx.String("cleanup-node")
+	if cleanupNode != "" {
+		if master != "" || node != "" {
+			panic("Cannot specify cleanup-node together with 'init-node or 'init-master'.")
+		}
+
+		err = cluster.CleanupClusterNode(&kube.Kube{KClient: clientset}, cleanupNode)
+		if err != nil {
+			logrus.Errorf(err.Error())
+			panic(err.Error())
+		}
+		return nil
+	}
 
 	if master != "" || node != "" {
 		if master != "" {
@@ -212,6 +226,7 @@ func runOvnKube(ctx *cli.Context) error {
 			}
 
 			ovnNodeController := cluster.NewOvnNodeController(clientset, factory)
+			ovnNodeController.ClusterIPNet, err = parseClusterSubnetEntries(ctx.String("cluster-subnet"))
 			err := ovnNodeController.StartClusterNode(node)
 			if err != nil {
 				logrus.Errorf(err.Error())
@@ -223,7 +238,6 @@ func runOvnKube(ctx *cli.Context) error {
 		select {}
 	}
 	return fmt.Errorf("need to run ovnkube in either master and/or node mode")
-
 }
 
 // parseClusterSubnetEntries returns the parsed set of CIDRNetworkEntries passed by the user on the command line

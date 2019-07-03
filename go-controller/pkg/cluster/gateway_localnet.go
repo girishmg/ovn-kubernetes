@@ -167,7 +167,7 @@ func initLocalnetGatewayInternal(nodeName string, clusterIPSubnet []string,
 	}
 
 	err = util.GatewayInit(clusterIPSubnet, nodeName, ifaceID, localnetGatewayIP,
-		macAddress, localnetGatewayNextHop, subnet, true, config.Gateway.VLANID)
+		macAddress, localnetGatewayNextHop, subnet, true, nil)
 	if err != nil {
 		return fmt.Errorf("failed to localnet gateway: %v", err)
 	}
@@ -187,7 +187,7 @@ func initLocalnetGatewayInternal(nodeName string, clusterIPSubnet []string,
 
 // AddService adds service and creates corresponding resources in OVN
 func localnetAddService(svc *kapi.Service) error {
-	if svc.Spec.Type != kapi.ServiceTypeNodePort {
+	if !util.ServiceTypeHasNodePort(svc) {
 		return nil
 	}
 	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
@@ -220,7 +220,7 @@ func localnetAddService(svc *kapi.Service) error {
 }
 
 func localnetDeleteService(svc *kapi.Service) error {
-	if svc.Spec.Type != kapi.ServiceTypeNodePort {
+	if !util.ServiceTypeHasNodePort(svc) {
 		return nil
 	}
 	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
@@ -267,6 +267,11 @@ func localnetNodePortWatcher(ipt util.IPTablesHelper, wf *factory.WatchFactory) 
 		args:  []string{"-j", iptableNodePortChain},
 	})
 	rules = append(rules, iptRule{
+		table: "nat",
+		chain: "OUTPUT",
+		args:  []string{"-j", iptableNodePortChain},
+	})
+	rules = append(rules, iptRule{
 		table: "filter",
 		chain: "FORWARD",
 		args:  []string{"-j", iptableNodePortChain},
@@ -307,5 +312,20 @@ func localnetNodePortWatcher(ipt util.IPTablesHelper, wf *factory.WatchFactory) 
 			}
 		},
 	}, nil)
+	return err
+}
+
+func cleanupLocalnetGateway() error {
+	// get bridgeName from ovn-bridge-mappings.
+	stdout, stderr, err := util.RunOVSVsctl("--if-exists", "get", "Open_vSwitch", ".",
+		"external_ids:ovn-bridge-mappings")
+	if err != nil {
+		return fmt.Errorf("Failed to get ovn-bridge-mappings stderr:%s (%v)", stderr, err)
+	}
+	bridgeName := strings.Split(stdout, ":")[1]
+	_, stderr, err = util.RunOVSVsctl("--", "--if-exists", "del-br", bridgeName)
+	if err != nil {
+		return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
+	}
 	return err
 }

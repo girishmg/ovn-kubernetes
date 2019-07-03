@@ -1,6 +1,6 @@
 # How to use Open Virtual Networking with Kubernetes
 
-On Linux, the easiest way to get started is to use OVN daemonsets.
+On Linux, the easiest way to get started is to use OVN daemonset and deployments.
 
 ## Install Open vSwitch kernel modules on all hosts.
 
@@ -16,14 +16,14 @@ the kernel module package by:
 
 ```
 sudo apt-get install apt-transport-https
-echo "deb http://18.191.116.101/openvswitch/stable /" |  sudo tee /etc/apt/sources.list.d/openvswitch.list
-wget -O - http://18.191.116.101/openvswitch/keyFile |  sudo apt-key add -
+echo "deb http://3.19.28.122/openvswitch/stable /" |  sudo tee /etc/apt/sources.list.d/openvswitch.list
+wget -O - http://3.19.28.122/openvswitch/keyFile |  sudo apt-key add -
 sudo apt-get update
 sudo apt-get build-dep dkms
 sudo apt-get install openvswitch-datapath-dkms -y
 ```
 
-## Run daemonsets
+## Run daemonset and deployments
 
 On Kubernetes master, label it to run daemonsets.
 
@@ -31,7 +31,7 @@ On Kubernetes master, label it to run daemonsets.
 kubectl taint nodes --all node-role.kubernetes.io/master-
 ```
 
-Create OVN daemonset yamls from templates by:
+Create OVN daemonset and deployment yamls from templates by running the commands below:
 (The $MASTER_IP below is the IP address of the machine where kube-apiserver is
 running)
 
@@ -43,23 +43,23 @@ git clone https://github.com/ovn-org/ovn-kubernetes
 cd $HOME/work/src/github.com/ovn-org/ovn-kubernetes/dist/images
 ./daemonset.sh --image=docker.io/ovnkube/ovn-daemonset-u:latest \
     --net-cidr=192.168.0.0/16 --svc-cidr=172.16.1.0/24 \
-    --gateway-options="--gateway-local" \
+    --gateway-mode="local" \
     --k8s-apiserver=https://$MASTER_IP:6443
 ```
 
-Apply OVN daemonset yamls.
+Apply OVN daemonset and deployment yamls.
 
 ```
 # Create OVN namespace, service accounts, ovnkube-db headless service, configmap, and policies
 kubectl create -f $HOME/work/src/github.com/ovn-org/ovn-kubernetes/dist/yaml/ovn-setup.yaml
 
-# Run ovnkube-db daemonset.
+# Run ovnkube-db deployment.
 kubectl create -f $HOME/work/src/github.com/ovn-org/ovn-kubernetes/dist/yaml/ovnkube-db.yaml
 
-# Run ovnkube-master daemonset.
+# Run ovnkube-master deployment.
 kubectl create -f $HOME/work/src/github.com/ovn-org/ovn-kubernetes/dist/yaml/ovnkube-master.yaml
 
-# Run ovnkube daemonsets for nodes
+# Run ovnkube daemonset for nodes
 kubectl create -f $HOME/work/src/github.com/ovn-org/ovn-kubernetes/dist/yaml/ovnkube-node.yaml
 ```
 
@@ -73,5 +73,4 @@ For Windows, (and to understand what daemonsets run internally), please read
 gateway modes supported), please read [MANUAL.md].
 
 [INSTALL.rst]: http://docs.openvswitch.org/en/latest/intro/install
-[INSTALL.UBUNTU.md]: docs/INSTALL.UBUNTU.md
 [MANUAL.md]: README_MANUAL.md

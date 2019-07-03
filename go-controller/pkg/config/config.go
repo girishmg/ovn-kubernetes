@@ -128,17 +128,22 @@ const (
 	GatewayModeShared GatewayMode = "shared"
 	// GatewayModeSpare indicates OVN claims a spare interfaface for the gateway
 	GatewayModeSpare GatewayMode = "spare"
-	// GatewayModeLocalnet indicates OVN creates a local NAT-ed interface for the gateway
-	GatewayModeLocalnet GatewayMode = "localnet"
+	// GatewayModeLocal indicates OVN creates a local NAT-ed interface for the gateway
+	GatewayModeLocal GatewayMode = "local"
 )
 
 // GatewayConfig holds node gateway-related parsed config file parameters and command-line overrides
 type GatewayConfig struct {
-	Mode           GatewayMode `gcfg:"mode"`
-	Interface      string      `gcfg:"interface"`
-	NextHop        string      `gcfg:"next-hop"`
-	VLANID         uint        `gcfg:"vlan-id"`
-	NodeportEnable bool        `gcfg:"nodeport"`
+	// Mode is the gateway mode; if may be either empty (disabled), "shared", "spare", or "local"
+	Mode GatewayMode `gcfg:"mode"`
+	// Interface is the network interface to use for the gateway in "shared" or "spare" mode
+	Interface string `gcfg:"interface"`
+	// NextHop is the gateway IP address of Interface; will be autodetected if not given
+	NextHop string `gcfg:"next-hop"`
+	// VLANID is the option VLAN tag to apply to gateway traffic for "shared" or "spare" modes
+	VLANID uint `gcfg:"vlan-id"`
+	// NodeportEnable sets whether to provide Kubernetes NodePort service or not
+	NodeportEnable bool `gcfg:"nodeport"`
 }
 
 // OvnAuthConfig holds client authentication and location details for
@@ -191,6 +196,12 @@ var (
 
 	// legacy service-cluster-ip-range CLI option
 	serviceClusterIPRange string
+	// legacy init-gateways CLI option
+	initGateways bool
+	// legacy gateway-spare-interface CLI option
+	gatewaySpareInterface bool
+	// legacy gateway-local CLI option
+	gatewayLocal bool
 )
 
 func init() {
@@ -298,6 +309,10 @@ var CommonFlags = []cli.Flag{
 	cli.StringFlag{
 		Name:  "init-node",
 		Usage: "initialize node, requires the name that node is registered with in kubernetes cluster",
+	},
+	cli.StringFlag{
+		Name:  "cleanup-node",
+		Usage: "cleanup node, requires the name that node is registered with in kubernetes cluster",
 	},
 	cli.StringFlag{
 		Name:  "pidfile",
@@ -468,9 +483,10 @@ var OvnSBFlags = []cli.Flag{
 
 //OVNGatewayFlags capture L3 Gateway related flags
 var OVNGatewayFlags = []cli.Flag{
-	cli.BoolFlag{
-		Name:  "init-gateways",
-		Usage: "initialize a gateway in the minion. Only useful with \"init-node\"",
+	cli.StringFlag{
+		Name: "gateway-mode",
+		Usage: "Sets the cluster gateway mode. One of \"shared\", \"spare\", " +
+			"or \"local\". If not given gateway functionality is disabled.",
 	},
 	cli.StringFlag{
 		Name: "gateway-interface",
@@ -489,17 +505,6 @@ var OVNGatewayFlags = []cli.Flag{
 			"\"init-gateways\"",
 		Destination: &cliConfig.Gateway.NextHop,
 	},
-	cli.BoolFlag{
-		Name: "gateway-spare-interface",
-		Usage: "If true, assumes that \"gateway-interface\" provided can be " +
-			"exclusively used for the OVN gateway.  When true, only OVN" +
-			"related traffic can flow through this interface",
-	},
-	cli.BoolFlag{
-		Name: "gateway-local",
-		Usage: "If true, creates a local gateway (br-local) to let traffic reach " +
-			"host network and also exit host with iptables NAT",
-	},
 	cli.UintFlag{
 		Name: "gateway-vlanid",
 		Usage: "The VLAN on which the external network is available. " +
@@ -510,6 +515,23 @@ var OVNGatewayFlags = []cli.Flag{
 		Name:        "nodeport",
 		Usage:       "Setup nodeport based ingress on gateways.",
 		Destination: &cliConfig.Gateway.NodeportEnable,
+	},
+
+	// Deprecated CLI options
+	cli.BoolFlag{
+		Name:        "init-gateways",
+		Usage:       "DEPRECATED; use --gateway-mode instead",
+		Destination: &initGateways,
+	},
+	cli.BoolFlag{
+		Name:        "gateway-spare-interface",
+		Usage:       "DEPRECATED; use --gateway-mode instead",
+		Destination: &gatewaySpareInterface,
+	},
+	cli.BoolFlag{
+		Name:        "gateway-local",
+		Usage:       "DEPRECATED; use --gateway-mode instead",
+		Destination: &gatewayLocal,
 	},
 }
 
@@ -653,16 +675,34 @@ func buildGatewayConfig(ctx *cli.Context, cli, file *config) error {
 	// Copy config file values over default values
 	overrideFields(&Gateway, &file.Gateway)
 
-	// And CLI overrides over config file and default values
-	if ctx.Bool("init-gateways") {
-		cli.Gateway.Mode = GatewayModeShared
-		if ctx.Bool("gateway-spare-interface") {
-			cli.Gateway.Mode = GatewayModeSpare
-		} else if ctx.Bool("gateway-local") {
-			cli.Gateway.Mode = GatewayModeLocalnet
+	cli.Gateway.Mode = GatewayMode(ctx.String("gateway-mode"))
+	if cli.Gateway.Mode == GatewayModeDisabled {
+		// Handle legacy CLI options
+		if ctx.Bool("init-gateways") {
+			cli.Gateway.Mode = GatewayModeShared
+			if ctx.Bool("gateway-spare-interface") {
+				cli.Gateway.Mode = GatewayModeSpare
+			} else if ctx.Bool("gateway-local") {
+				cli.Gateway.Mode = GatewayModeLocal
+			}
 		}
 	}
+	// And CLI overrides over config file and default values
 	overrideFields(&Gateway, &cli.Gateway)
+
+	if Gateway.Mode != GatewayModeDisabled {
+		validModes := []string{string(GatewayModeShared), string(GatewayModeSpare), string(GatewayModeLocal)}
+		var found bool
+		for _, mode := range validModes {
+			if string(Gateway.Mode) == mode {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("invalid gateway mode %q: expect one of %s", string(Gateway.Mode), strings.Join(validModes, ","))
+		}
+	}
 
 	// Options are only valid if Mode is not disabled
 	if Gateway.Mode == GatewayModeDisabled {
@@ -674,9 +714,6 @@ func buildGatewayConfig(ctx *cli.Context, cli, file *config) error {
 		}
 		if Gateway.VLANID != 0 {
 			return fmt.Errorf("gateway VLAN ID option '%d' not allowed when gateway is disabled", Gateway.VLANID)
-		}
-		if Gateway.NodeportEnable {
-			return fmt.Errorf("gateway nodeport enable option not allowed when gateway is disabled")
 		}
 	}
 	return nil

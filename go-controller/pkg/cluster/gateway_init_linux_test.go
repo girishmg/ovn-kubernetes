@@ -313,11 +313,11 @@ func spareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 		fexec := ovntest.NewFakeExec()
 		if gatewayVLANID == 0 {
 			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovs-vsctl --timeout=15 -- --may-exist add-port br-int eth0 -- set interface eth0 external-ids:iface-id=eth0_" + nodeName,
+				"ovs-vsctl --timeout=15 -- --may-exist add-port br-int eth0 -- set interface eth0 external-ids:iface-id=eth0_" + nodeName + " external-ids:physical-ip=" + eth0CIDR,
 			})
 		} else {
 			fexec.AddFakeCmdsNoOutputNoError([]string{
-				"ovs-vsctl --timeout=15 -- --may-exist add-port br-int eth0 -- set interface eth0 external-ids:iface-id=eth0_" + nodeName + fmt.Sprintf(" -- set port eth0 tag=%d", gatewayVLANID),
+				"ovs-vsctl --timeout=15 -- --may-exist add-port br-int eth0 -- set interface eth0 external-ids:iface-id=eth0_" + nodeName + " external-ids:physical-ip=" + eth0CIDR + fmt.Sprintf(" -- set port eth0 tag=%d", gatewayVLANID),
 			})
 		}
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
@@ -589,6 +589,9 @@ GR_openshift-master-node chassis=6a47b33b-89d3-4d65-ac31-b19b549326c7 lb_force_s
 						"-s 169.254.33.2/24 -j MASQUERADE",
 					},
 					"PREROUTING": []string{
+						"-j OVN-KUBE-NODEPORT",
+					},
+					"OUTPUT": []string{
 						"-j OVN-KUBE-NODEPORT",
 					},
 					"OVN-KUBE-NODEPORT": []string{},

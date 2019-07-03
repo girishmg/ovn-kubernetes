@@ -256,6 +256,9 @@ func (oc *MasterController) WatchNamespaces() error {
 func (oc *MasterController) WatchNodes() error {
 	_, err := oc.watchFactory.AddNodeHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
+			if !config.Gateway.NodeportEnable {
+				return
+			}
 			node := obj.(*kapi.Node)
 			logrus.Debugf("Added event for Node %q", node.Name)
 			err := oc.addNode(node)
