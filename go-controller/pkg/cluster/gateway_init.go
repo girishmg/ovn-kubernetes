@@ -68,6 +68,7 @@ loop:
 
 func (cluster *OvnNodeController) initGateway(
 	nodeName string, clusterIPSubnet []string, subnet string) error {
+
 	if config.Gateway.NodeportEnable {
 		err := initLoadBalancerHealthChecker(nodeName, cluster.watchFactory)
 		if err != nil {

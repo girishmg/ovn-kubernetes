@@ -214,7 +214,7 @@ func runOvnKube(ctx *cli.Context) error {
 			if err != nil {
 				panic(err.Error())
 			}
-			if err := ovnMasterController.StartClusterMaster(master); err != nil {
+			if err = ovnMasterController.StartClusterMaster(master, true); err != nil {
 				logrus.Errorf(err.Error())
 				panic(err.Error())
 			}

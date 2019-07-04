@@ -126,7 +126,7 @@ var _ = Describe("Master Operations", func() {
 				HostSubnetLength: 24,
 			})
 
-			err = masterController.StartClusterMaster("master")
+			err = masterController.StartClusterMaster("master", false)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fexec.CalledMatchesExpected()).To(BeTrue())

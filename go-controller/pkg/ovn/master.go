@@ -23,7 +23,7 @@ import (
 //
 // TODO: Verify that the cluster was not already called with a different global subnet
 //  If true, then either quit or perform a complete reconfiguration of the cluster (recreate switches/routers with new subnet values)
-func (oc *MasterController) StartClusterMaster(masterNodeName string) error {
+func (oc *MasterController) StartClusterMaster(masterNodeName string, startWatchers bool) error {
 
 	alreadyAllocated := make([]string, 0)
 	existingNodes, err := oc.kube.GetNodes()
@@ -67,6 +67,14 @@ func (oc *MasterController) StartClusterMaster(masterNodeName string) error {
 
 	if _, _, err := util.RunOVNNbctl("--columns=_uuid", "list", "port_group"); err == nil {
 		oc.portGroupSupport = true
+	}
+
+	// This flag is set to false when called from the test framework. We cannot run watchers
+	// in the case of the test since the code calls several sync*() functions on the
+	// resources and that results in several calls to ovn-nbctl commands which are hard to trace
+	// and maintain in the test as Fake commands.
+	if !startWatchers {
+		return nil
 	}
 
 	for _, f := range []func() error{oc.WatchPods, oc.WatchServices, oc.WatchEndpoints, oc.WatchNamespaces,
