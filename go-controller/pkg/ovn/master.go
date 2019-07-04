@@ -6,10 +6,8 @@ import (
 	"net"
 	"strings"
 
-	kapi "k8s.io/api/core/v1"
-	"k8s.io/client-go/tools/cache"
-
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	kapi "k8s.io/api/core/v1"
 
 	"github.com/openshift/origin/pkg/util/netutils"
 	"github.com/sirupsen/logrus"
@@ -83,6 +81,7 @@ func (oc *MasterController) StartClusterMaster(masterNodeName string, startWatch
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -412,26 +411,3 @@ func (oc *MasterController) syncNodes(nodes []interface{}) {
 	}
 }
 
-func (oc *MasterController) watchNodes() error {
-	_, err := oc.watchFactory.AddNodeHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			node := obj.(*kapi.Node)
-			logrus.Debugf("Added event for Node %q", node.Name)
-			err := oc.addNode(node)
-			if err != nil {
-				logrus.Errorf("error creating subnet for node %s: %v", node.Name, err)
-			}
-		},
-		UpdateFunc: func(old, new interface{}) {},
-		DeleteFunc: func(obj interface{}) {
-			node := obj.(*kapi.Node)
-			logrus.Debugf("Delete event for Node %q", node.Name)
-			nodeSubnet, _ := parseNodeHostSubnet(node)
-			err := oc.deleteNode(node.Name, nodeSubnet)
-			if err != nil {
-				logrus.Error(err)
-			}
-		},
-	}, oc.syncNodes)
-	return err
-}
