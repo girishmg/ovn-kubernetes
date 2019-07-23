@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"encoding/json"
 	"github.com/sirupsen/logrus"
 
 	kapi "k8s.io/api/core/v1"
@@ -18,6 +19,7 @@ import (
 type Interface interface {
 	SetAnnotationOnPod(pod *kapi.Pod, key, value string) error
 	SetAnnotationOnNode(node *kapi.Node, key, value string) error
+	SetAnnotationsOnNode(node *kapi.Node, annotations map[string]string) error
 	UpdateNodeStatus(node *kapi.Node) error
 	GetAnnotationsOnPod(namespace, name string) (map[string]string, error)
 	GetPod(namespace, name string) (*kapi.Pod, error)
@@ -65,6 +67,32 @@ func (k *Kube) UpdateNodeStatus(node *kapi.Node) error {
 	_, err := k.KClient.CoreV1().Nodes().UpdateStatus(node)
 	if err != nil {
 		logrus.Errorf("Error in updating status on node %s: %v", node.Name, err)
+	}
+	return err
+}
+
+// SetAnnotationsOnNode takes the node object and map of key/value string pairs to set as annotations
+func (k *Kube) SetAnnotationsOnNode(node *kapi.Node, annotations map[string]string) error {
+	var err error
+	var patchData []byte
+	patch := struct {
+		Metadata map[string]interface{} `json:"metadata"`
+	}{
+		Metadata: map[string]interface{}{
+			"annotations": "",
+		},
+	}
+
+	logrus.Infof("Setting annotations %v on node %s", annotations, node.Name)
+	patchData, err = json.Marshal(&patch)
+	if err != nil {
+		logrus.Errorf("Error in setting annotations on node %s: %v", node.Name, err)
+		return err
+	}
+
+	_, err = k.KClient.CoreV1().Nodes().Patch(node.Name, types.MergePatchType, patchData)
+	if err != nil {
+		logrus.Errorf("Error in setting annotation on node %s: %v", node.Name, err)
 	}
 	return err
 }

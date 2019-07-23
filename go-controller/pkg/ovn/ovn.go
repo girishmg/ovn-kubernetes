@@ -260,16 +260,27 @@ func (oc *Controller) WatchNodes() error {
 			if err != nil {
 				logrus.Errorf("error creating subnet for node %s: %v", node.Name, err)
 			}
+			err = oc.syncNodeManagementPort(node)
+			if err != nil {
+				logrus.Errorf("error creating Node Management Port for node %s: %v", node.Name, err)
+				return
+			}
 			if !config.Gateway.NodeportEnable {
 				return
 			}
 			gatewaysHandled[node.Name] = oc.handleNodePortLB(node)
 		},
 		UpdateFunc: func(old, new interface{}) {
+			node := new.(*kapi.Node)
+			logrus.Debugf("Updated event for Node %q", node.Name)
+			err := oc.syncNodeManagementPort(node)
+			if err != nil {
+				logrus.Errorf("error update Node Management Port for node %s: %v", node.Name, err)
+				return
+			}
 			if !config.Gateway.NodeportEnable {
 				return
 			}
-			node := new.(*kapi.Node)
 			if !gatewaysHandled[node.Name] {
 				gatewaysHandled[node.Name] = oc.handleNodePortLB(node)
 			}
