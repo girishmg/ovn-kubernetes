@@ -108,11 +108,31 @@ func localnetGatewayNAT(ipt util.IPTablesHelper, ifname, ip string) error {
 
 func initLocalnetGateway(nodeName string, clusterIPSubnet []string,
 	subnet string, wf *factory.WatchFactory) error {
+	err := initLocalnetGatewayInternal(nodeName, clusterIPSubnet, subnet, false, wf)
+	if err != nil {
+		return err
+	}
+
 	ipt, err := util.GetIPTablesHelper(iptables.ProtocolIPv4)
 	if err != nil {
 		return fmt.Errorf("failed to initialize iptables: %v", err)
 	}
 
+	err = localnetGatewayNAT(ipt, "br-nexthop", localnetGatewayIP)
+	if err != nil {
+		return fmt.Errorf("Failed to add NAT rules for localnet gateway (%v)",
+			err)
+	}
+
+	if config.Gateway.NodeportEnable {
+		return localnetNodePortWatcher(ipt, wf)
+	}
+
+	return nil
+}
+
+func initLocalnetGatewayInternal(nodeName string, clusterIPSubnet []string,
+	subnet string, localOnly bool, wf *factory.WatchFactory) error {
 	// Create a localnet OVS bridge.
 	localnetBridgeName := "br-local"
 	_, stderr, err := util.RunOVSVsctl("--may-exist", "add-br",
@@ -157,25 +177,20 @@ func initLocalnetGateway(nodeName string, clusterIPSubnet []string,
 			localnetBridgeNextHop, err)
 	}
 
-	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, localnetBridgeName)
+	phynetName := util.PhysicalNetworkName
+	if localOnly {
+		phynetName = util.LocalNetworkName
+	}
+
+	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, localnetBridgeName, phynetName)
 	if err != nil {
 		return fmt.Errorf("failed to set up shared interface gateway: %v", err)
 	}
 
 	err = util.GatewayInit(clusterIPSubnet, nodeName, ifaceID, localnetGatewayIP,
-		macAddress, localnetGatewayNextHop, subnet, true, nil)
+		macAddress, localnetGatewayNextHop, subnet, phynetName, localOnly, nil)
 	if err != nil {
 		return fmt.Errorf("failed to localnet gateway: %v", err)
-	}
-
-	err = localnetGatewayNAT(ipt, localnetBridgeNextHop, localnetGatewayIP)
-	if err != nil {
-		return fmt.Errorf("Failed to add NAT rules for localnet gateway (%v)",
-			err)
-	}
-
-	if config.Gateway.NodeportEnable {
-		return localnetNodePortWatcher(ipt, wf)
 	}
 
 	return nil
@@ -294,17 +309,24 @@ func localnetNodePortWatcher(ipt util.IPTablesHelper, wf *factory.WatchFactory) 
 	return err
 }
 
-func cleanupLocalnetGateway() error {
+func cleanupLocalnetGateway(physnet string) error {
 	// get bridgeName from ovn-bridge-mappings.
 	stdout, stderr, err := util.RunOVSVsctl("--if-exists", "get", "Open_vSwitch", ".",
 		"external_ids:ovn-bridge-mappings")
 	if err != nil {
 		return fmt.Errorf("Failed to get ovn-bridge-mappings stderr:%s (%v)", stderr, err)
 	}
-	bridgeName := strings.Split(stdout, ":")[1]
-	_, stderr, err = util.RunOVSVsctl("--", "--if-exists", "del-br", bridgeName)
-	if err != nil {
-		return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
+	bridge_mappings := strings.Split(stdout, ",")
+	for _, bridge_mapping := range bridge_mappings {
+		m := strings.Split(bridge_mapping, ":")
+		if physnet == m[0] {
+			bridgeName := m[1]
+			_, stderr, err = util.RunOVSVsctl("--", "--if-exists", "del-br", bridgeName)
+			if err != nil {
+				return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
+			}
+		}
 	}
+
 	return err
 }

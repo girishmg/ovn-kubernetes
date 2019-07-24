@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/openshift/origin/pkg/util/netutils"
+
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 )
 
@@ -15,6 +17,7 @@ const (
 	// PhysicalNetworkName is the name that maps to an OVS bridge that provides
 	// access to physical/external network
 	PhysicalNetworkName = "physnet"
+	LocalNetworkName = "locnet"
 )
 
 // GetK8sClusterRouter returns back the OVN distibuted router
@@ -152,7 +155,12 @@ func getGatewayLoadBalancers(gatewayRouter string) (string, string, error) {
 
 // GatewayInit creates a gateway router for the local chassis.
 func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddress,
-	defaultGW string, rampoutIPSubnet string, localnet bool, lspArgs []string) error {
+	defaultGW string, rampoutIPSubnet string, physnetName string, localOnly bool, lspArgs []string) error {
+
+	idName := nodeName
+	if localOnly {
+		idName = "local_"+nodeName
+	}
 
 	ip, physicalIPNet, err := net.ParseCIDR(nicIP)
 	if err != nil {
@@ -178,7 +186,7 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 
 	// Create a gateway router.
-	gatewayRouter := "GR_" + nodeName
+	gatewayRouter := "GR_" + idName
 	stdout, stderr, err := RunOVNNbctl("--", "--may-exist", "lr-add",
 		gatewayRouter, "--", "set", "logical_router", gatewayRouter,
 		"options:chassis="+systemID, "external_ids:physical_ip="+physicalIP)
@@ -229,66 +237,34 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	}
 
 	// Add a default route in distributed router with first GR as the nexthop.
-	_, defGatewayIP, err := GetDefaultGatewayRouterIP()
-	if err != nil {
-		return err
-	}
-	stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
-		k8sClusterRouter, "0.0.0.0/0", defGatewayIP.String())
-	if err != nil {
-		return fmt.Errorf("Failed to add a default route in distributed router "+
-			"with first GR as the nexthop, stdout: %q, stderr: %q, error: %v",
-			stdout, stderr, err)
-	}
-
-	if config.Gateway.NodeportEnable {
-		// Create 2 load-balancers for north-south traffic for each gateway
-		// router.  One handles UDP and another handles TCP.
-		var k8sNSLbTCP, k8sNSLbUDP string
-		k8sNSLbTCP, k8sNSLbUDP, err = getGatewayLoadBalancers(gatewayRouter)
+	if localOnly {
+		nodeIP, err := netutils.GetNodeIP(nodeName)
+		if err != nil {
+			return fmt.Errorf("failed to obtain local IP from hostname %q: %v", nodeName, err)
+		}
+		stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
+			k8sClusterRouter, nodeIP+"/32", routerCIDR.IP.String())
+		if err != nil {
+			return fmt.Errorf("Failed to add a route to nodeIP in router "+
+				"with local_node GR as the nexthop, stdout: %q, stderr: %q, error: %v",
+				stdout, stderr, err)
+		}
+	} else {
+		_, defGatewayIP, err := GetDefaultGatewayRouterIP()
 		if err != nil {
 			return err
 		}
-		if k8sNSLbTCP == "" {
-			k8sNSLbTCP, stderr, err = RunOVNNbctl("--", "create",
-				"load_balancer",
-				"external_ids:TCP_lb_gateway_router="+gatewayRouter,
-				"protocol=tcp")
-			if err != nil {
-				return fmt.Errorf("Failed to create load balancer: "+
-					"stderr: %q, error: %v", stderr, err)
-			}
-		}
-		if k8sNSLbUDP == "" {
-			k8sNSLbUDP, stderr, err = RunOVNNbctl("--", "create",
-				"load_balancer",
-				"external_ids:UDP_lb_gateway_router="+gatewayRouter,
-				"protocol=udp")
-			if err != nil {
-				return fmt.Errorf("Failed to create load balancer: "+
-					"stderr: %q, error: %v", stderr, err)
-			}
-		}
-
-		// Add north-south load-balancers to the gateway router.
-		stdout, stderr, err = RunOVNNbctl("set", "logical_router",
-			gatewayRouter, "load_balancer="+k8sNSLbTCP)
+		stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
+			k8sClusterRouter, "0.0.0.0/0", defGatewayIP.String())
 		if err != nil {
-			return fmt.Errorf("Failed to set north-south load-balancers to the "+
-				"gateway router, stdout: %q, stderr: %q, error: %v",
-				stdout, stderr, err)
-		}
-		stdout, stderr, err = RunOVNNbctl("add", "logical_router",
-			gatewayRouter, "load_balancer", k8sNSLbUDP)
-		if err != nil {
-			return fmt.Errorf("Failed to add north-south load-balancers to the "+
-				"gateway router, stdout: %q, stderr: %q, error: %v",
+			return fmt.Errorf("Failed to add a default route in distributed router "+
+				"with first GR as the nexthop, stdout: %q, stderr: %q, error: %v",
 				stdout, stderr, err)
 		}
 	}
 
 	// Create the external switch for the physical interface to connect to.
-	externalSwitch := "ext_" + nodeName
+	externalSwitch := "ext_" + idName
 	stdout, stderr, err = RunOVNNbctl("--may-exist", "ls-add",
 		externalSwitch)
 	if err != nil {
@@ -301,10 +277,10 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 	// world is accessed via this port.
 	cmdArgs := []string{"--", "--may-exist", "lsp-add", externalSwitch, ifaceID,
 		"--", "lsp-set-addresses", ifaceID, "unknown"}
-	if localnet {
+	if physnetName != "" {
 		cmdArgs = append(cmdArgs, "--", "lsp-set-type", ifaceID,
 			"localnet", "--", "lsp-set-options", ifaceID,
-			"network_name="+PhysicalNetworkName)
+			"network_name="+physnetName)
 	}
 	cmdArgs = append(cmdArgs, lspArgs...)
 	stdout, stderr, err = RunOVNNbctl(cmdArgs...)
@@ -370,6 +346,56 @@ func GatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMacAddre
 		return fmt.Errorf("Failed to add /32 route to Gateway router's IP of %q "+
 			"on the distributed router, stdout: %q, stderr: %q, error: %v",
 			routerCIDR.IP.String(), stdout, stderr, err)
+	}
+
+	if localOnly {
+		return nil
+	}
+
+	if config.Gateway.NodeportEnable {
+		// Create 2 load-balancers for north-south traffic for each gateway
+		// router.  One handles UDP and another handles TCP.
+		var k8sNSLbTCP, k8sNSLbUDP string
+		k8sNSLbTCP, k8sNSLbUDP, err = getGatewayLoadBalancers(gatewayRouter)
+		if err != nil {
+			return err
+		}
+		if k8sNSLbTCP == "" {
+			k8sNSLbTCP, stderr, err = RunOVNNbctl("--", "create",
+				"load_balancer",
+				"external_ids:TCP_lb_gateway_router="+gatewayRouter,
+				"protocol=tcp")
+			if err != nil {
+				return fmt.Errorf("Failed to create load balancer: "+
+					"stderr: %q, error: %v", stderr, err)
+			}
+		}
+		if k8sNSLbUDP == "" {
+			k8sNSLbUDP, stderr, err = RunOVNNbctl("--", "create",
+				"load_balancer",
+				"external_ids:UDP_lb_gateway_router="+gatewayRouter,
+				"protocol=udp")
+			if err != nil {
+				return fmt.Errorf("Failed to create load balancer: "+
+					"stderr: %q, error: %v", stderr, err)
+			}
+		}
+
+		// Add north-south load-balancers to the gateway router.
+		stdout, stderr, err = RunOVNNbctl("set", "logical_router",
+			gatewayRouter, "load_balancer="+k8sNSLbTCP)
+		if err != nil {
+			return fmt.Errorf("Failed to set north-south load-balancers to the "+
+				"gateway router, stdout: %q, stderr: %q, error: %v",
+				stdout, stderr, err)
+		}
+		stdout, stderr, err = RunOVNNbctl("add", "logical_router",
+			gatewayRouter, "load_balancer", k8sNSLbUDP)
+		if err != nil {
+			return fmt.Errorf("Failed to add north-south load-balancers to the "+
+				"gateway router, stdout: %q, stderr: %q, error: %v",
+				stdout, stderr, err)
+		}
 	}
 
 	if rampoutIPSubnet != "" {
