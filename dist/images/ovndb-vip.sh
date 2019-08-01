@@ -93,6 +93,25 @@ EOF
     fi
 }
 
+setup_iptables_rules () {
+  pod_cidr=$(echo $net_cidr | awk '{print $1FS$2}' FS='/')
+  remove_iptables_rules
+  echo "setup iptables rules to allow service request, but drop requests from the POD subnets $pod_cidr"
+  iptables -N OVN-KUBE-OVNDB 2>/dev/null
+  iptables -A INPUT -j OVN-KUBE-OVNDB 2>/dev/null
+  for dport in 6641 6642; do
+    iptables -A OVN-KUBE-OVNDB -p tcp -m tcp -s $pod_cidr --dport $dport -j DROP 2>/dev/null
+    iptables -A OVN-KUBE-OVNDB -p tcp -m tcp --dport $dport -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT 2>/dev/null
+  done
+}
+
+remove_iptables_rules () {
+  echo "remove iptables rules"
+  iptables -D INPUT -j OVN-KUBE-OVNDB 2>/dev/null
+  iptables -F OVN-KUBE-OVNDB 2>/dev/null
+  iptables -X OVN-KUBE-OVNDB 2>/dev/null
+}
+
 cmd=${1}
 
 # =========================================
@@ -177,6 +196,7 @@ service_healthy() {
 
 # v3 - Runs ovn NB/SB DB pacemaker/corosync cluster
 run-ovndb () {
+  trap 'remove_iptables_rules; exit 0' TERM
   check_ovn_daemonset_version "3"
   if [[ ${ovndb_vip} == "" ]] ; then
     echo "Exiting since the Virtual IP to be used for OVN DBs has not been provided"
@@ -191,6 +211,9 @@ run-ovndb () {
   if [[ $? -ne 0 ]]; then
     exit 11
   fi
+
+  # setup iptable rules to allow valid OVNDB requests before create ovnkube_db endpoints
+  setup_iptables_rules
 
   pcs property set stonith-enabled=false > /dev/null 2>&1
   pcs property set no-quorum-policy=ignore > /dev/null 2>&1
