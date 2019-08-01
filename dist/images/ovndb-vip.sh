@@ -35,6 +35,8 @@ ovn_daemonset_version=${OVN_DAEMONSET_VERSION:-"3"}
 # otherwise it is the container ID (useful for debugging).
 ovn_pod_host=$(hostname)
 
+net_cidr=${OVN_NET_CIDR:-10.128.0.0/14/23}
+
 # in the case where OVN DBs are configured for Active/Standby HA using corosync/pacemaker,
 # then ovndb_vip represents the Virtual IP address that frontend's both NB and SB DBs
 ovndb_vip=${OVN_DB_VIP:-""}
@@ -91,6 +93,28 @@ EOF
         echo "Failed to create endpoint with host ${ovndb_vip} for ovnkube-db service"
         exit 1
     fi
+}
+
+setup_iptables_rules () {
+  remove_iptables_rules
+  echo "setup iptables rules to allow service request, but drop requests from $net_cidr"
+  iptables -N OVN-KUBE-OVNDB 2>/dev/null
+  iptables -A INPUT -j OVN-KUBE-OVNDB 2>/dev/null
+  IFS=, read -a cidr_array <<< "$net_cidr"
+  for dport in 6641 6642; do
+    for cidr in ${cidr_array[@]}; do
+      pod_cidr=$(echo $cidr | awk '{print $1FS$2}' FS='/')
+      iptables -A OVN-KUBE-OVNDB -p tcp -m tcp -s $pod_cidr --dport $dport -j DROP 2>/dev/null
+    done
+    iptables -A OVN-KUBE-OVNDB -p tcp -m tcp --dport $dport -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT 2>/dev/null
+  done
+}
+
+remove_iptables_rules () {
+  echo "remove iptables rules"
+  iptables -D INPUT -j OVN-KUBE-OVNDB 2>/dev/null
+  iptables -F OVN-KUBE-OVNDB 2>/dev/null
+  iptables -X OVN-KUBE-OVNDB 2>/dev/null
 }
 
 cmd=${1}
@@ -177,6 +201,7 @@ service_healthy() {
 
 # v3 - Runs ovn NB/SB DB pacemaker/corosync cluster
 run-ovndb () {
+  trap 'remove_iptables_rules; exit 0' TERM
   check_ovn_daemonset_version "3"
   if [[ ${ovndb_vip} == "" ]] ; then
     echo "Exiting since the Virtual IP to be used for OVN DBs has not been provided"
@@ -191,6 +216,9 @@ run-ovndb () {
   if [[ $? -ne 0 ]]; then
     exit 11
   fi
+
+  # setup iptable rules to allow valid OVNDB requests before create ovnkube_db endpoints
+  setup_iptables_rules
 
   pcs property set stonith-enabled=false > /dev/null 2>&1
   pcs property set no-quorum-policy=ignore > /dev/null 2>&1

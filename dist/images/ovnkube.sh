@@ -566,8 +566,6 @@ nb-ovsdb () {
   # Make sure /var/lib/openvswitch exists
   mkdir -p /var/lib/openvswitch
 
-  iptables-rules 6641
-
   echo "=============== run nb_ovsdb ========== MASTER ONLY"
   echo "ovn_log_nb=${ovn_log_nb} ovn_nb_log_file=${ovn_nb_log_file}"
   /usr/share/openvswitch/scripts/ovn-ctl run_nb_ovsdb --no-monitor \
@@ -576,7 +574,9 @@ nb-ovsdb () {
   wait_for_event process_ready ovnnb_db
   echo "=============== nb-ovsdb ========== RUNNING"
   sleep 3
-  ovn-nbctl set-connection ptcp:6641 -- set connection . inactivity_probe=0
+
+  ovn_db_host=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
+  ovn-nbctl set-connection ptcp:6641:${ovn_db_host} -- set connection . inactivity_probe=0
 
   tail --follow=name ${ovn_nb_log_file} &
   ovn_tail_pid=$!
@@ -587,14 +587,12 @@ nb-ovsdb () {
 
 # v3 - run sb_ovsdb in a separate container
 sb-ovsdb () {
-  trap 'kill $(jobs -p); exit 0' TERM
+  trap 'remove_iptables_rules; kill $(jobs -p); exit 0' TERM
   check_ovn_daemonset_version "3"
   rm -f /var/run/openvswitch/ovnsb_db.pid
 
   # Make sure /var/lib/openvswitch exists
   mkdir -p /var/lib/openvswitch
-
-  iptables-rules 6642
 
   echo "=============== run sb_ovsdb ========== MASTER ONLY"
   echo "ovn_log_sb=${ovn_log_sb} ovn_sb_log_file=${ovn_sb_log_file}"
@@ -606,7 +604,12 @@ sb-ovsdb () {
   wait_for_event process_ready ovnsb_db
   echo "=============== sb-ovsdb ========== RUNNING"
   sleep 3
-  ovn-sbctl set-connection ptcp:6642 -- set connection . inactivity_probe=0
+
+  # setup iptable rules to allow valid OVNDB requests before create ovnkube_db endpoints
+  setup_iptables_rules
+
+  ovn_db_host=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
+  ovn-nbctl set-connection ptcp:6642:${ovn_db_host} -- set connection . inactivity_probe=0
 
   # create the ovnkube_db endpoint for other pods to query the OVN DB IP
   create_ovnkube_db_ep
@@ -683,13 +686,27 @@ ovn-northd () {
   fi
 }
 
-# make sure the specified dport is open
-iptables-rules () {
-  dport=$1
-  iptables -C INPUT -p tcp -m tcp --dport $dport -m conntrack --ctstate NEW -j ACCEPT
-  if [[ $? != 0 ]] ; then
-    iptables -I INPUT -p tcp -m tcp --dport $dport -m conntrack --ctstate NEW -j ACCEPT
-  fi
+# make sure the specified dport is open, but not from pods
+setup_iptables_rules () {
+  remove_iptables_rules
+  echo "setup iptables rules to allow service request, but drop requests from $net_cidr"
+  iptables -N OVN-KUBE-OVNDB 2>/dev/null
+  iptables -A INPUT -j OVN-KUBE-OVNDB 2>/dev/null
+  IFS=, read -a cidr_array <<< "$net_cidr"
+  for dport in 6641 6642; do
+    for cidr in ${cidr_array[@]}; do
+      pod_cidr=$(echo $cidr | awk '{print $1FS$2}' FS='/')
+      iptables -A OVN-KUBE-OVNDB -p tcp -m tcp -s $pod_cidr --dport $dport -j DROP 2>/dev/null
+    done
+    iptables -A OVN-KUBE-OVNDB -p tcp -m tcp --dport $dport -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT 2>/dev/null
+  done
+}
+
+remove_iptables_rules () {
+  echo "remove iptables rules"
+  iptables -D INPUT -j OVN-KUBE-OVNDB 2>/dev/null
+  iptables -F OVN-KUBE-OVNDB 2>/dev/null
+  iptables -X OVN-KUBE-OVNDB 2>/dev/null
 }
 
 # v2 v3 - run ovnkube --master

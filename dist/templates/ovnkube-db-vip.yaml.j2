@@ -98,6 +98,11 @@ spec:
             configMapKeyRef:
               name: ovn-config
               key: k8s_apiserver
+        - name: OVN_NET_CIDR
+          valueFrom:
+            configMapKeyRef:
+              name: ovn-config
+              key: net_cidr
         - name: OVN_KUBERNETES_NAMESPACE
           valueFrom:
             fieldRef:
