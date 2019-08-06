@@ -48,6 +48,7 @@
 # OVN_LOG_SB - log level (ovn-ctl default: -vconsole:off -vfile:info) - v3
 # OVN_LOG_CONTROLLER - log level (ovn-ctl default: -vconsole:off -vfile:info) - v3
 # OVN_LOG_NBCTLD - log file (ovn-nbctl daemon mode default: /var/log/openvswitch/ovn-nbctl.log)
+# OVN_CNI_HOST_CFG - bool flag speicify host cni binary bringup interface (default: false) 
 
 # The argument to the command is the operation to be performed
 # ovn-master ovn-controller ovn-node display display_env ovn_debug
@@ -112,6 +113,8 @@ net_cidr=${OVN_NET_CIDR:-10.128.0.0/14/23}
 svc_cidr=${OVN_SVC_CIDR:-172.30.0.0/16}
 
 ovn_kubernetes_namespace=${OVN_KUBERNETES_NAMESPACE:-ovn-kubernetes}
+
+ovn_cni_host_cfg=${OVN_CNI_HOST_CFG:-""}
 
 # host on which ovnkube-db POD is running and this POD contains both
 # OVN NB and SB DB running in their own container
@@ -354,6 +357,7 @@ echo OVN_CONTROLLER_OPTS ${ovn_controller_opts}
 echo OVN_LOG_CONTROLLER ${ovn_log_controller}
 echo OVN_GATEWAY_MODE ${ovn_gateway_mode}
 echo OVN_GATEWAY_OPTS ${ovn_gateway_opts}
+echo OVN_CNI_HOST_CFG ${ovn_cni_host_cfg}
 echo OVN_NET_CIDR ${net_cidr}
 echo OVN_SVC_CIDR ${svc_cidr}
 echo K8S_APISERVER ${K8S_APISERVER}
@@ -740,7 +744,8 @@ ovn-node () {
       --loglevel=${ovnkube_loglevel} \
       --gateway-mode=${ovn_gateway_mode} ${ovn_gateway_opts}  \
       --pidfile /var/run/openvswitch/ovnkube.pid \
-      --logfile /var/log/ovn-kubernetes/ovnkube.log &
+      --logfile /var/log/ovn-kubernetes/ovnkube.log \
+      ${ovn_cni_host_cfg} &
 
   wait_for_event process_ready ovnkube
   setup_cni
@@ -759,6 +764,7 @@ cleanup-ovn-node () {
   check_ovn_daemonset_version "3"
 
   rm -f /etc/cni/net.d/10-ovn-kubernetes.conf
+  rm -f /var/run/ovn-kubernetes/cni/config.json
 
   echo "=============== time: $(date +%d-%m-%H:%M:%S:%N) cleanup-ovn-node - (wait for ovn-controller to exit)"
   retries=0

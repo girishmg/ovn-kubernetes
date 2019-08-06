@@ -16,7 +16,7 @@ func main() {
 	c.Usage = "a CNI plugin to set up or tear down a container's network with OVN"
 	c.Version = "0.0.2"
 
-	p := cni.NewCNIPlugin("")
+	p := cni.NewCNIPlugin("", "")
 	c.Action = func(ctx *cli.Context) error {
 		skel.PluginMain(
 			p.CmdAdd,

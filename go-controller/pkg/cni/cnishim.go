@@ -18,6 +18,7 @@ import (
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	"github.com/containernetworking/cni/pkg/types/current"
+	"github.com/sirupsen/logrus"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 )
@@ -26,14 +27,18 @@ import (
 // functions to use it
 type Plugin struct {
 	socketPath string
+	configPath string
 }
 
 // NewCNIPlugin creates the internal Plugin object
-func NewCNIPlugin(socketPath string) *Plugin {
+func NewCNIPlugin(socketPath, configPath string) *Plugin {
 	if len(socketPath) == 0 {
 		socketPath = serverSocketPath
 	}
-	return &Plugin{socketPath: socketPath}
+	if len(configPath) == 0 {
+		configPath = serverConfigFilePath
+	}
+	return &Plugin{socketPath: socketPath, configPath: configPath}
 }
 
 // Create and fill a Request with this Plugin's environment and stdin which
@@ -108,6 +113,45 @@ func (p *Plugin) CmdAdd(args *skel.CmdArgs) error {
 	if err != nil {
 		return err
 	}
+	cniconfig, _ := readConfig(p.configPath)
+	if cniconfig != nil && cniconfig.HostIFCfg {
+		pr, _ := cniRequestToPodRequest(req)
+		ovnresult := &OvnResult{}
+		if err := json.Unmarshal(body, ovnresult); err != nil {
+			return fmt.Errorf("failed to unmarshal response '%s': %v", string(body), err)
+		}
+		var interfacesArray []*current.Interface
+		ipAddress := ovnresult.IPAddress
+		gatewayIP := ovnresult.GatewayIP
+		interfacesArray, err = pr.ConfigureInterface(pr.PodNamespace, pr.PodName, ovnresult.MacAddress, ipAddress, gatewayIP, cniconfig.MTU, ovnresult.Ingress, ovnresult.Egress)
+		if err != nil {
+			logrus.Errorf("Failed to configure interface in pod: %v", err)
+			return nil
+		}
+
+		// Build the result structure to pass back to the runtime
+		addr, addrNet, err := net.ParseCIDR(ipAddress)
+		if err != nil {
+			logrus.Errorf("failed to parse IP address %q: %v", ipAddress, err)
+			return nil
+		}
+		ipVersion := "6"
+		if addr.To4() != nil {
+			ipVersion = "4"
+		}
+		result := &current.Result{
+			Interfaces: interfacesArray,
+			IPs: []*current.IPConfig{
+				{
+					Version:   ipVersion,
+					Interface: current.Int(1),
+					Address:   net.IPNet{IP: addr, Mask: addrNet.Mask},
+					Gateway:   net.ParseIP(gatewayIP),
+				},
+			},
+		}
+		return types.PrintResult(result, conf.CNIVersion)
+	}
 
 	result, err := current.NewResult(body)
 	if err != nil {
@@ -121,4 +165,16 @@ func (p *Plugin) CmdAdd(args *skel.CmdArgs) error {
 func (p *Plugin) CmdDel(args *skel.CmdArgs) error {
 	_, err := p.doCNI("http://dummy/", newCNIRequest(args))
 	return err
+}
+
+func readConfig(configPath string) (*Config, error) {
+	bytes, err := ioutil.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	var config Config
+	if err = json.Unmarshal(bytes, &config); err != nil {
+		return nil, fmt.Errorf("could not parse config file %q: %v", configPath, err)
+	}
+	return &config, nil
 }

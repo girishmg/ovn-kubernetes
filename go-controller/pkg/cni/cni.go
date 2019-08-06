@@ -72,7 +72,8 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 		return nil
 	}
 	kubecli := &kube.Kube{KClient: clientset}
-
+	var result *current.Result
+	var ovnresult *OvnResult
 	// Get the IP address and MAC address from the API server.
 	// Exponential back off ~32 seconds + 7* t(api call)
 	var annotationBackoff = wait.Backoff{Duration: 1 * time.Second, Steps: 7, Factor: 1.5, Jitter: 0.1}
@@ -120,39 +121,53 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 		logrus.Errorf("failed to parse bandwidth request: %v", err)
 		return nil
 	}
+	if !config.CNI.HostIFCfg {
+		var interfacesArray []*current.Interface
+		interfacesArray, err = pr.ConfigureInterface(namespace, podName, macAddress, ipAddress, gatewayIP, config.Default.MTU, ingress, egress)
+		if err != nil {
+			logrus.Errorf("Failed to configure interface in pod: %v", err)
+			return nil
+		}
 
-	var interfacesArray []*current.Interface
-	interfacesArray, err = pr.ConfigureInterface(namespace, podName, macAddress, ipAddress, gatewayIP, config.Default.MTU, ingress, egress)
-	if err != nil {
-		logrus.Errorf("Failed to configure interface in pod: %v", err)
-		return nil
-	}
-
-	// Build the result structure to pass back to the runtime
-	addr, addrNet, err := net.ParseCIDR(ipAddress)
-	if err != nil {
-		logrus.Errorf("failed to parse IP address %q: %v", ipAddress, err)
-		return nil
-	}
-	ipVersion := "6"
-	if addr.To4() != nil {
-		ipVersion = "4"
-	}
-	result := &current.Result{
-		Interfaces: interfacesArray,
-		IPs: []*current.IPConfig{
-			{
-				Version:   ipVersion,
-				Interface: current.Int(1),
-				Address:   net.IPNet{IP: addr, Mask: addrNet.Mask},
-				Gateway:   net.ParseIP(gatewayIP),
+		// Build the result structure to pass back to the runtime
+		addr, addrNet, err := net.ParseCIDR(ipAddress)
+		if err != nil {
+			logrus.Errorf("failed to parse IP address %q: %v", ipAddress, err)
+			return nil
+		}
+		ipVersion := "6"
+		if addr.To4() != nil {
+			ipVersion = "4"
+		}
+		result = &current.Result{
+			Interfaces: interfacesArray,
+			IPs: []*current.IPConfig{
+				{
+					Version:   ipVersion,
+					Interface: current.Int(1),
+					Address:   net.IPNet{IP: addr, Mask: addrNet.Mask},
+					Gateway:   net.ParseIP(gatewayIP),
+				},
 			},
-		},
+		}
+	} else {
+		ovnresult = &OvnResult{
+			MacAddress: macAddress,
+			IPAddress:  ipAddress,
+			GatewayIP:  gatewayIP,
+			Ingress:    ingress,
+			Egress:     egress}
 	}
 
 	podResult := &PodResult{}
-	//versionedResult, _ := result.GetAsVersion(pr.CNIConf.CNIVersion)
-	podResult.Response, _ = json.Marshal(result)
+
+	if !config.CNI.HostIFCfg {
+		//versionedResult, _ := result.GetAsVersion(pr.CNIConf.CNIVersion)
+		podResult.Response, _ = json.Marshal(result)
+	} else {
+		podResult.Response, _ = json.Marshal(ovnresult)
+	}
+
 	return podResult
 }
 

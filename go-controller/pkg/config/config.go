@@ -51,6 +51,7 @@ var (
 		ConfDir:         "/etc/cni/net.d",
 		Plugin:          "ovn-k8s-cni-overlay",
 		WinHNSNetworkID: "",
+		HostIFCfg:       false,
 	}
 
 	// Kubernetes holds Kubernetes-related parsed config file parameters and command-line overrides
@@ -123,6 +124,8 @@ type CNIConfig struct {
 	Plugin string `gcfg:"plugin"`
 	// Windows ONLY, specifies the ID of the HNS Network to which the containers will be attached
 	WinHNSNetworkID string `gcfg:"win-hnsnetwork-id"`
+	// Linux ONLY, specifies host cni client do the namespace configuration
+	HostIFCfg bool `gcfg:"hostifcfg"`
 }
 
 // KubernetesConfig holds Kubernetes-related parsed config file parameters and command-line overrides
@@ -427,6 +430,11 @@ var CNIFlags = []cli.Flag{
 		Name:        "win-hnsnetwork-id",
 		Usage:       "the ID of the HNS network to which containers will be attached (default: not set)",
 		Destination: &cliConfig.CNI.WinHNSNetworkID,
+	},
+	cli.BoolFlag{
+		Name:        "hostifcfg",
+		Usage:       "speficy the flag if cni binary bringup the interface in host",
+		Destination: &cliConfig.CNI.HostIFCfg,
 	},
 }
 

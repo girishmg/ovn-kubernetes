@@ -13,6 +13,24 @@ const serverSocketName string = "ovn-cni-server.sock"
 const serverSocketPath string = serverRunDir + "/" + serverSocketName
 const serverTCPAddress string = "127.0.0.1:3996"
 
+const serverConfigFileName string = "config.json"
+const serverConfigFilePath string = serverRunDir + "/" + serverConfigFileName
+
+//Config defines config.json for cni server
+type Config struct {
+	MTU       int  `json:"mtu"`
+	HostIFCfg bool `json:"HostIFCfg"`
+}
+
+//OvnResult consists result from cni server if cni client congigure interface
+type OvnResult struct {
+	MacAddress string `json:"macAddress"`
+	IPAddress  string `json:"ipAddress"`
+	GatewayIP  string `json:"gatewayIP"`
+	Ingress    int64  `json:"ingress`
+	Egress     int64  `json:"egress`
+}
+
 // Explicit type for CNI commands the server handles
 type command string
 
@@ -70,4 +88,5 @@ type Server struct {
 	http.Server
 	requestFunc cniRequestFunc
 	rundir      string
+	config      Config
 }
