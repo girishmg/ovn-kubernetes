@@ -2,8 +2,6 @@ package cluster
 
 import (
 	"net"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -27,8 +25,9 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	var err error
 	var node *kapi.Node
 	var subnet *net.IPNet
+	var configMap *kapi.ConfigMap
 	var clusterSubnets []string
-	var cidr string
+	var cidr, cniConfig string
 
 	for _, clusterSubnet := range config.Default.ClusterSubnets {
 		clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR.String())
@@ -80,13 +79,22 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 		}
 	}
 
-	confFile := filepath.Join(config.CNI.ConfDir, config.CNIConfFileName)
-	_, err = os.Stat(confFile)
-	if os.IsNotExist(err) {
-		err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName)
-		if err != nil {
-			return err
-		}
+	// Get OVN CNI network configuration from ConfigMap
+	configMap, err = cluster.Kube.GetConfigMap(config.Kubernetes.OVNConfigNamespace, "ovn-config")
+	if err == nil {
+		cniConfig = util.GetConfigMapStringData(configMap, "cni_network_config")
+	}
+	if cniConfig == "" {
+		logrus.Infof("cni_network_config is not defined in ConfigMap %s/%s, use default instead",
+			config.Kubernetes.OVNConfigNamespace, "ovn-config")
+		cniConfig = "{\"cniVersion\":\"0.3.1\",\"name\":\"ovn-kubernetes\",\"type\":\"ovn-k8s-cni-overlay\",\"ipam\":{},\"dns\":{}}"
+	}
+
+	logrus.Infof("create OVN CNI config file %s/%s: %s", config.CNI.ConfDir, config.CNIConfFileName, cniConfig)
+	err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName, cniConfig)
+	if err != nil {
+		logrus.Errorf(err.Error())
+		return err
 	}
 
 	// start the cni server
