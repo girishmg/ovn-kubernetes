@@ -2,8 +2,6 @@ package cluster
 
 import (
 	"net"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -80,13 +78,9 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 		}
 	}
 
-	confFile := filepath.Join(config.CNI.ConfDir, config.CNIConfFileName)
-	_, err = os.Stat(confFile)
-	if os.IsNotExist(err) {
-		err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName)
-		if err != nil {
-			return err
-		}
+	err = config.WriteCNIConfig(config.CNI.ConfDir, config.CNIConfFileName)
+	if err != nil {
+		return err
 	}
 
 	// start the cni server

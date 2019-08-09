@@ -45,6 +45,7 @@ var (
 	// CNI holds CNI-related parsed config file parameters and command-line overrides
 	CNI = CNIConfig{
 		ConfDir:         "/etc/cni/net.d",
+		CNINetConf:      "{\"cniVersion\":\"0.3.1\",\"name\":\"ovn-kubernetes\",\"type\":\"ovn-k8s-cni-overlay\",\"ipam\":{},\"dns\":{}}",
 		Plugin:          "ovn-k8s-cni-overlay",
 		WinHNSNetworkID: "",
 	}
@@ -109,6 +110,8 @@ type LoggingConfig struct {
 type CNIConfig struct {
 	// ConfDir specifies the CNI config directory in which to write the overlay CNI config file
 	ConfDir string `gcfg:"conf-dir"`
+	// CNINetConf specifies the CNI config file contents
+	CNINetConf string `gcfg:"cni-network-config"`
 	// Plugin specifies the name of the CNI plugin
 	Plugin string `gcfg:"plugin"`
 	// Windows ONLY, specifies the ID of the HNS Network to which the containers will be attached
@@ -397,6 +400,12 @@ var CNIFlags = []cli.Flag{
 		Name:        "cni-conf-dir",
 		Usage:       "the CNI config directory in which to write the overlay CNI config file (default: /etc/cni/net.d)",
 		Destination: &cliConfig.CNI.ConfDir,
+	},
+	cli.StringFlag{
+		Name:        "cni-network-config",
+		Usage:       "the CNI network config file content",
+		Destination: &cliConfig.CNI.CNINetConf,
+		EnvVar:      "OVN_CNI_NETWORK_CONFIG",
 	},
 	cli.StringFlag{
 		Name:        "cni-plugin",
