@@ -15,7 +15,7 @@ import (
 // Interface represents the exported methods for dealing with getting/setting
 // kubernetes resources
 type Interface interface {
-	SetAnnotationOnPod(namespace, name string, key, value string) error
+	SetAnnotationOnPod(namespace, name, key, value string) error
 	SetAnnotationOnNode(node *kapi.Node, key, value string) error
 	GetAnnotationsOnPod(namespace, name string) (map[string]string, error)
 	GetPod(namespace, name string) (*kapi.Pod, error)
@@ -34,12 +34,12 @@ type Kube struct {
 }
 
 // SetAnnotationOnPod takes the pod namespace/name and key/value string pair to set it as an annotation
-func (k *Kube) SetAnnotationOnPod(namespace, name string, key, value string) error {
-	logrus.Infof("Setting annotations %s=%s on pod %s/%s", key, value, name, namespace)
+func (k *Kube) SetAnnotationOnPod(namespace, name, key, value string) error {
+	logrus.Infof("Setting annotations %s=%s on pod %s/%s", key, value, namespace, name)
 	patchData := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%s"}}}`, key, value)
 	_, err := k.KClient.CoreV1().Pods(namespace).Patch(name, types.MergePatchType, []byte(patchData))
 	if err != nil {
-		logrus.Errorf("Error in setting annotation on pod %s/%s: %v", name, namespace, err)
+		logrus.Errorf("Error in setting annotation on pod %s/%s: %v", namespace, name, err)
 	}
 	return err
 }

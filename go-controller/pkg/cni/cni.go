@@ -120,22 +120,21 @@ func (pr *PodRequest) cmdAdd() *PodResult {
 
 	ipAddressMask := strings.Split(ipAddress, "/")
 	if len(ipAddressMask) != 2 {
-		logrus.Errorf("Error to get ip address")
+		logrus.Errorf("Invalid IP address %s in the ovn pod annotation of %s/%s", ipAddress, namespace, podName)
 		return nil
 	}
 
-	// Pod spec ask for custom MAC address, update the corresponding logical port and the pod annotation
+	// Pod spec requested for custom MAC address, update the corresponding logical port and the pod annotation
 	if len(pr.MAC) != 0 && pr.MAC != macAddress {
-		logrus.Debugf("cmdAdd: Pod %s/%s request custom MAC %s", namespace, podName, pr.MAC)
+		logrus.Debugf("cmdAdd: Pod %s/%s requested custom MAC %s", namespace, podName, pr.MAC)
 
 		portName := fmt.Sprintf("%s_%s", namespace, podName)
-		out, stderr, err := util.RunOVNNbctl("--wait=sb", "--", "lsp-set-addresses", portName,
-			fmt.Sprintf("%s %s", pr.MAC, ipAddressMask[0]), "--", "lsp-set-port-security", portName,
-			fmt.Sprintf("%s %s", pr.MAC, ipAddress))
+		out, stderr, err := util.RunOVNNbctl("--wait=sb",
+			"--", "lsp-set-addresses", portName, fmt.Sprintf("%s %s", pr.MAC, ipAddressMask[0]),
+			"--", "lsp-set-port-security", portName, fmt.Sprintf("%s %s", pr.MAC, ipAddress))
 		if err != nil {
 			logrus.Errorf("Error while updating logical port %s's mac address to %s "+
-				"stdout: %q, stderr: %q (%v)",
-				portName, pr.MAC, out, stderr, err)
+				"stdout: %q, stderr: %q (%v)", portName, pr.MAC, out, stderr, err)
 			return nil
 		}
 		annotation := fmt.Sprintf(`{\"ip_address\":\"%s\", \"mac_address\":\"%s\", \"gateway_ip\": \"%s\"}`, ipAddress, pr.MAC, gatewayIP)
