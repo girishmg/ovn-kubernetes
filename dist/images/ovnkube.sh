@@ -237,6 +237,48 @@ process_ready () {
 }
 
 
+# This function is to check if process is running while waiting for its readiness.
+# It can be used to catch the process exit error early, but can only be used for the
+# process that was just started in the same container. Otherwise, the 1st check could
+# fail if the process in the different container/Pod is not started yet:
+#
+# 1. checking if the process is running by pgrep its command and pidfile name. This
+#    can catch the process exit error early, e.g., process panic
+# 2.1 the pidfile is created and the listed pid is running, or
+# 2.2 using `ovs-appctl` utility for the processes that support it.
+#
+# $1 is the name of the process pidfile; $2 is optional: it specifies the command
+# name if that is different from $1 (pidfile name)
+#
+check_process_while_waitfor_readiness() {
+  pidfile=/var/run/openvswitch/${1}.pid
+  command=${2:-${1}}
+  retries=0
+  sleep 1
+  while true; do
+    pgrep -f "${command}.*${pidfile}"
+    if [[ $? != 0 ]] ; then
+      echo "error: $1 $2 process not found, exiting"
+      exit 1
+    fi
+    if [[ -f ${pidfile} ]] ; then
+      check_health $1 $(cat $pidfile)
+      if [[ $? == 0 ]] ; then
+        if [[ "${retries}" != 0 ]]; then
+          echo "$1 $2 came up in ${retries} 5 sec tries"
+        fi
+        break
+      elif [[ "${retries}" -gt 80 ]]; then
+        echo "error: $1 $2 did not come up after ${retries} 5 sec tries, exiting"
+        exit 1
+      fi
+    fi
+    (( retries += 1 ))
+    echo "info: Waiting for $1 $2 to come up, waiting 5s ..."
+    sleep 5
+  done
+}
+
 # continously checks if process is healthy. Exits if process terminates.
 # $1 is the name of the process
 # $2 is the pid of an another process to kill before exiting
@@ -532,7 +574,7 @@ nb-ovsdb () {
       /usr/share/openvswitch/scripts/ovn-ctl run_nb_ovsdb --no-monitor \
       --ovn-nb-log="${ovn_log_nb}" &
 
-  wait_for_event process_ready ovnnb_db
+  check_process_while_waitfor_readiness ovnnb_db ovsdb-server
   echo "=============== nb-ovsdb ========== RUNNING"
   sleep 3
   ovn-nbctl set-connection ptcp:6641 -- set connection . inactivity_probe=0
@@ -560,7 +602,7 @@ sb-ovsdb () {
       /usr/share/openvswitch/scripts/ovn-ctl run_sb_ovsdb --no-monitor     \
       --ovn-sb-log="${ovn_log_sb}" &
 
-  wait_for_event process_ready ovnsb_db
+  check_process_while_waitfor_readiness ovnsb_db ovsdb-server
   echo "=============== sb-ovsdb ========== RUNNING"
   sleep 3
   ovn-sbctl set-connection ptcp:6642 -- set connection . inactivity_probe=0
@@ -607,7 +649,7 @@ run-ovn-northd () {
       --ovn-northd-log="${ovn_log_northd}" \
     ${ovn_northd_opts}
 
-  wait_for_event process_ready ovn-northd
+  check_process_while_waitfor_readiness ovn-northd
   echo "=============== run_ovn_northd ========== RUNNING"
   sleep 1
 
@@ -662,7 +704,7 @@ ovn-master () {
     --pidfile /var/run/openvswitch/ovnkube-master.pid \
     --logfile /var/log/ovn-kubernetes/ovnkube-master.log &
   echo "=============== ovn-master ========== running"
-  wait_for_event process_ready ovnkube-master
+  check_process_while_waitfor_readiness ovnkube-master ovnkube
   sleep 1
 
   tail --follow=name /var/log/ovn-kubernetes/ovnkube-master.log &
@@ -695,7 +737,7 @@ ovn-controller () {
                --ovn-controller-log="${ovn_log_controller}" \
                ${ovn_controller_opts}
 
-  wait_for_event process_ready ovn-controller
+  check_process_while_waitfor_readiness ovn-controller
   echo "=============== ovn-controller ========== running"
 
   sleep 4
@@ -736,7 +778,7 @@ ovn-node () {
       --pidfile /var/run/openvswitch/ovnkube.pid \
       --logfile /var/log/ovn-kubernetes/ovnkube.log &
 
-  wait_for_event process_ready ovnkube
+  check_process_while_waitfor_readiness ovnkube
   setup_cni
   echo "=============== ovn-node ========== running"
 
@@ -787,9 +829,10 @@ run-nbctld () {
   echo "ovn_log_nbctld=${ovn_log_nbctld}"
 
   # use unix socket
-  /usr/bin/ovn-nbctl --pidfile --detach --db=${ovn_nbdb_test} --log-file=${ovn_log_nbctld}
+  /usr/bin/ovn-nbctl --pidfile=/var/run/openvswitch/ovn-nbctl.pid --detach \
+    --db=${ovn_nbdb_test} --log-file=${ovn_log_nbctld}
 
-  wait_for_event process_ready ovn-nbctl
+  check_process_while_waitfor_readiness ovn-nbctl
   echo "=============== run_ovn_nbctl ========== RUNNING"
 
   tail --follow=name /var/log/openvswitch/ovn-nbctl.log &
