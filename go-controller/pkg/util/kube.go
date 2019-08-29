@@ -3,6 +3,7 @@ package util
 import (
 	"fmt"
 	"strings"
+	"encoding/json"
 
 	kapi "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -11,6 +12,7 @@ import (
 	"k8s.io/client-go/util/cert"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 )
 
 // NewClientset creates a Kubernetes clientset from either a kubeconfig,
@@ -64,4 +66,43 @@ func ServiceTypeHasClusterIP(service *kapi.Service) bool {
 // ServiceTypeHasNodePort checks if the service has an associated NodePort or not
 func ServiceTypeHasNodePort(service *kapi.Service) bool {
 	return service.Spec.Type == kapi.ServiceTypeNodePort || service.Spec.Type == kapi.ServiceTypeLoadBalancer
+}
+
+const (
+	defaultNetAnnot = "v1.multus-cni.io/default-network"
+)
+
+// GetPodCustomConfig return the default network attachment selection annotation that could
+// include custom IP/MAC.
+//
+// This function is a simplified version of parsePodNetworkAnnotation() function in multus-cni, need to revisit
+// once there is a library function that we can share.
+//
+// Also, OVN CNI today makes a simple assumption that all the Pods' default network is OVN, as the result, we make
+// the same assumption and check the custom configuration of the network attachment selection annotation defined in
+// default-network only
+func GetPodCustomConfig(pod *kapi.Pod) (*types.NetworkSelectionElement, error) {
+	var netAnnot string
+	var networks []*types.NetworkSelectionElement
+
+	netAnnot, _ = pod.Annotations[defaultNetAnnot]
+	if netAnnot == "" {
+		return nil, fmt.Errorf("Pod default network annotation is not defined")
+	}
+
+	// it is possible the default network is defined in the form of comma-delimited list of
+	// network attachment object name (i.e. list of <namespace>/<network name>@<ifname>), but
+	// we are only interested in the NetworkSelectionElement form that custom MAC/IP can be defined
+	if strings.IndexAny(netAnnot, "[{\"") >= 0 {
+		if err := json.Unmarshal([]byte(netAnnot), &networks); err != nil {
+			return nil, fmt.Errorf("failed to parse pod Network Attachment Selection Annotation JSON format: %v", err)
+		}
+	} else {
+		return nil, fmt.Errorf("no custom config is specified in the Pod default network annotation: %s", netAnnot)
+	}
+
+	if len(networks) == 1 {
+		return networks[0], nil
+	}
+	return nil, fmt.Errorf("no or more than one default network is specified: %s", netAnnot)
 }
