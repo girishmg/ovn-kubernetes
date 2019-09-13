@@ -155,15 +155,11 @@ func CleanupClusterNode(name string, kube *kube.Kube) error {
 		nodeName := strings.ToLower(node.Name)
 		err = cleanupSpareGateway(config.Gateway.Interface, nodeName)
 	case config.GatewayModeShared:
-		err1 := cleanupLocalnetGateway(util.LocalNetworkName)
-		err2 := cleanupSharedGateway()
-		if err1 == nil {
-			err = err2
-		} else if err2 == nil {
-			err = err1
-		} else {
-			err = fmt.Errorf("Combined errors: %v, %v", err1, err2)
+		err = cleanupLocalnetGateway(util.LocalNetworkName)
+		if err != nil {
+			logrus.Errorf("Failed to cleanup Localnet Gateway, error: %v", err)
 		}
+		err = cleanupSharedGateway()
 	}
 	if err != nil {
 		logrus.Errorf("Failed to cleanup Gateway, error: %v", err)

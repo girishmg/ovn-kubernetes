@@ -328,5 +328,5 @@ func cleanupLocalnetGateway(physnet string) error {
 		}
 	}
 
-	return err
+	return nil
 }

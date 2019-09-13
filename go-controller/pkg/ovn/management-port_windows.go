@@ -17,7 +17,7 @@ import (
 // that lets the node access its pods via their private IP address. This is used
 // for health checking and other management tasks.
 func CreateManagementPort(nodeName, localSubnet string, clusterSubnet []string) error {
-	interfaceName, interfaceIP, routerIP, err :=
+	interfaceName, interfaceIP, routerIP, _, err :=
 		createManagementPortGeneric(nodeName, localSubnet, clusterSubnet)
 	if err != nil {
 		return err
