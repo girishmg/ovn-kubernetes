@@ -304,13 +304,13 @@ func initSharedGateway(
 		return fmt.Errorf("failed to init shared interface gateway: %v", err)
 	}
 
-	// Program cluster.GatewayIntf to let non-pod traffic to go to host
-	// stack
-	if err = addDefaultConntrackRules(nodeName, bridgeName, gwIntf); err != nil {
+	if err = initLocalOnlyGateway(nodeName, clusterIPSubnet); err != nil {
 		return err
 	}
 
-	if err = initLocalOnlyGateway(nodeName, clusterIPSubnet); err != nil {
+	// Program cluster.GatewayIntf to let non-pod traffic to go to host
+	// stack
+	if err = addDefaultConntrackRules(nodeName, bridgeName, gwIntf); err != nil {
 		return err
 	}
 

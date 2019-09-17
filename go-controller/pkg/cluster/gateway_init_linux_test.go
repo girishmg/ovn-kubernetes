@@ -21,8 +21,8 @@ import (
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/vishvananda/netlink"
 
-        . "github.com/onsi/ginkgo"
-        . "github.com/onsi/gomega"
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 )
 
 func addNodeportLBs(fexec *ovntest.FakeExec, nodeName, tcpLBUUID, udpLBUUID string) {
@@ -101,7 +101,6 @@ func initLocalOnlyGatewayTest(fexec *ovntest.FakeExec, nodeName, clusterCIDR, cl
 	})
 	fexec.AddFakeCmdsNoOutputNoError([]string{
 		"ovn-nbctl --timeout=15 -- --may-exist lrp-add " + gwRouter + " rtoj-" + gwRouter + " " + lrpMAC + " " + lrpIP + "/16" + " -- set logical_switch_port jtor-" + gwRouter + " type=router options:router-port=rtoj-" + gwRouter + " addresses=router",
-		"ovn-nbctl --timeout=15 set logical_router " + gwRouter + " options:lb_force_snat_ip=" + lrpIP,
 		"ovn-nbctl --timeout=15 --may-exist lr-route-add " + gwRouter + " " + clusterCIDR + " 100.64.0.1",
 	})
 	fexec.AddFakeCmdsNoOutputNoError([]string{
@@ -116,7 +115,6 @@ func initLocalOnlyGatewayTest(fexec *ovntest.FakeExec, nodeName, clusterCIDR, cl
 		"ovn-nbctl --timeout=15 -- --may-exist lsp-add ext_local_" + nodeName + " etor-" + gwRouter + " -- set logical_switch_port etor-" + gwRouter + " type=router options:router-port=rtoe-" + gwRouter + " addresses=\"" + brLocalnetMAC + "\"",
 		"ovn-nbctl --timeout=15 --may-exist lr-route-add " + gwRouter + " 0.0.0.0/0 169.254.33.1 rtoe-" + gwRouter,
 		"ovn-nbctl --timeout=15 --may-exist lr-nat-add " + gwRouter + " snat 169.254.33.2 " + clusterCIDR,
-		"ovn-nbctl --timeout=15 --may-exist lr-route-add " + clusterRouterUUID + " " + lrpIP + " " + lrpIP,
 	})
 }
 

@@ -457,17 +457,6 @@ func LocalGatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMac
 			"stderr: %q, error: %v", stdout, stderr, err)
 	}
 
-	// When there are multiple gateway routers (which would be the likely
-	// default for any sane deployment), we need to SNAT traffic
-	// heading to the logical space with the Gateway router's IP so that
-	// return traffic comes back to the same gateway router.
-	stdout, stderr, err = RunOVNNbctl("set", "logical_router",
-		gatewayRouter, "options:lb_force_snat_ip="+routerCIDR.IP.String())
-	if err != nil {
-		return fmt.Errorf("Failed to set logical router, stdout: %q, "+
-			"stderr: %q, error: %v", stdout, stderr, err)
-	}
-
 	for _, entry := range clusterIPSubnet {
 		// Add a static route in GR with distributed router as the nexthop.
 		stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
@@ -563,17 +552,6 @@ func LocalGatewayInit(clusterIPSubnet []string, nodeName, ifaceID, nicIP, nicMac
 			return fmt.Errorf("Failed to create default SNAT rules, stdout: %q, "+
 				"stderr: %q, error: %v", stdout, stderr, err)
 		}
-	}
-
-	// We need to add a /32 route to the Gateway router's IP, on the
-	// cluster router, to ensure that the return traffic goes back
-	// to the same gateway router
-	stdout, stderr, err = RunOVNNbctl("--may-exist", "lr-route-add",
-		k8sClusterRouter, routerCIDR.IP.String(), routerCIDR.IP.String())
-	if err != nil {
-		return fmt.Errorf("Failed to add /32 route to Gateway router's IP of %q "+
-			"on the distributed router, stdout: %q, stderr: %q, error: %v",
-			routerCIDR.IP.String(), stdout, stderr, err)
 	}
 
 	return nil

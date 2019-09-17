@@ -310,6 +310,7 @@ func cleanupLocalnetGateway(physnet string) error {
 			if err != nil {
 				return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
 			}
+			break
 		}
 	}
 
