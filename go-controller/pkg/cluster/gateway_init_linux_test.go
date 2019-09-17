@@ -47,7 +47,7 @@ func addNodeportLBs(fexec *ovntest.FakeExec, nodeName, tcpLBUUID, udpLBUUID stri
 func initLocalOnlyGatewayTest(fexec *ovntest.FakeExec, nodeName, clusterCIDR, clusterRouterUUID,
 	systemID, lrpMAC, lrpIP string) {
 	const (
-		brLocalnetMAC     string = "11:22:33:44:55:66"
+		brLocalnetMAC string = "11:22:33:44:55:66"
 	)
 	gwRouter := "GR_local_" + nodeName
 	fexec.AddFakeCmdsNoOutputNoError([]string{
