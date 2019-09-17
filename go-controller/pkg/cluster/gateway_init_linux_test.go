@@ -234,6 +234,7 @@ GR_openshift-master-node chassis=6a47b33b-89d3-4d65-ac31-b19b549326c7 lb_force_s
 			"ovn-nbctl --timeout=15 --may-exist lr-route-add " + clusterRouterUUID + " " + lrpIP + " " + lrpIP,
 			"ovn-nbctl --timeout=15 --may-exist --policy=src-ip lr-route-add " + clusterRouterUUID + " " + nodeSubnet + " " + lrpIP,
 		})
+		initLocalOnlyGatewayTest(fexec, nodeName, clusterCIDR, clusterRouterUUID, systemID, lrpMAC, lrpIP)
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
 			Cmd:    "ovs-vsctl --timeout=15 wait-until Interface patch-breth0_" + nodeName + "-to-br-int ofport>0 -- get Interface patch-breth0_" + nodeName + "-to-br-int ofport",
 			Output: "5",
@@ -249,7 +250,6 @@ GR_openshift-master-node chassis=6a47b33b-89d3-4d65-ac31-b19b549326c7 lb_force_s
 			"ovs-ofctl add-flow breth0 priority=100, table=1, ct_state=+trk+rel, actions=output:5",
 			"ovs-ofctl add-flow breth0 priority=0, table=1, actions=output:LOCAL",
 		})
-		initLocalOnlyGatewayTest(fexec, nodeName, clusterCIDR, clusterRouterUUID, systemID, lrpMAC, lrpIP)
 		// nodePortWatcher()
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
 			Cmd:    "ovs-vsctl --timeout=15 --if-exists get interface patch-breth0_" + nodeName + "-to-br-int ofport",
