@@ -130,3 +130,13 @@ data:
   net_cidr:      "{{ net_cidr | default('10.128.0.0/14/23') }}"
   svc_cidr:      "{{ svc_cidr | default('172.30.0.0/16') }}"
   k8s_apiserver: "{{ k8s_apiserver.stdout }}"
+
+---
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: eyJhdXRocyI6eyJodHRwczovL3F1YXkuaW8iOnsidXNlcm5hbWUiOiJudmlkaWErc2RuIiwicGFzc3dvcmQiOiI2MExPVFNOQ0ZPM1AwMzhMNjhPMEFVTE1GUkRLVkJQQzYxSFpKQklLSTM3N09OVEtXV0FPNVJZMUxBWUJSWEtDIiwiYXV0aCI6ImJuWnBaR2xoSzNOa2JqbzJNRXhQVkZOT1EwWlBNMUF3TXpoTU5qaFBNRUZWVEUxR1VrUkxWa0pRUXpZeFNGcEtRa2xMU1RNM04wOU9WRXRYVjBGUE5WSlpNVXhCV1VKU1dFdEQifX19
+metadata:
+  name: registry-credentials
+  namespace: ovn-kubernetes
