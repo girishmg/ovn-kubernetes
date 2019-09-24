@@ -34,19 +34,15 @@ RUN INSTALL_PKGS=" \
 # docker build --build-arg rpmArch=ARCH -f Dockerfile.centos -t some_tag .
 # where ARCH can be x86_64 (default), aarch64, or ppc64le
 ARG rpmArch=x86_64
-ARG ovsVer=2.10.1
-ARG ovsSubVer=3.el7
 ARG dpdkVer=17.11
 ARG dpdkSubVer=3.el7
 ARG dpdkRpmUrl=http://cbs.centos.org/kojifiles/packages/dpdk/${dpdkVer}/${dpdkSubVer}/${rpmArch}/dpdk-${dpdkVer}-${dpdkSubVer}.${rpmArch}.rpm
 
 RUN if [ "$(uname -m)" = "aarch64" ]; then dpdkRpmUrl=https://rpmfind.net/linux/fedora/linux/updates/28/Everything/aarch64/Packages/d/dpdk-17.11.2-1.fc28.aarch64.rpm; fi && rpm -i ${dpdkRpmUrl}
-RUN rpm -i http://cbs.centos.org/kojifiles/packages/openvswitch/${ovsVer}/${ovsSubVer}/${rpmArch}/openvswitch-${ovsVer}-${ovsSubVer}.${rpmArch}.rpm
-RUN rpm -i http://cbs.centos.org/kojifiles/packages/openvswitch/${ovsVer}/${ovsSubVer}/${rpmArch}/openvswitch-ovn-common-${ovsVer}-${ovsSubVer}.${rpmArch}.rpm
-RUN rpm -i http://cbs.centos.org/kojifiles/packages/openvswitch/${ovsVer}/${ovsSubVer}/${rpmArch}/openvswitch-ovn-central-${ovsVer}-${ovsSubVer}.${rpmArch}.rpm
-RUN rpm -i http://cbs.centos.org/kojifiles/packages/openvswitch/${ovsVer}/${ovsSubVer}/${rpmArch}/openvswitch-ovn-host-${ovsVer}-${ovsSubVer}.${rpmArch}.rpm
-RUN rpm -i http://cbs.centos.org/kojifiles/packages/openvswitch/${ovsVer}/${ovsSubVer}/${rpmArch}/openvswitch-ovn-vtep-${ovsVer}-${ovsSubVer}.${rpmArch}.rpm
-RUN rpm -i http://cbs.centos.org/kojifiles/packages/openvswitch/${ovsVer}/${ovsSubVer}/${rpmArch}/openvswitch-devel-${ovsVer}-${ovsSubVer}.${rpmArch}.rpm
+
+RUN curl -s https://baefece184f8010e74aa58f88db3a6660f8e1eb2c21ac69e:@packages.nvidia.com/install/repositories/sdn/nv-ovs-2-11-2/script.rpm.sh | bash
+RUN yum install -y openvswitch openvswitch-ovn-common openvswitch-ovn-central openvswitch-ovn-host openvswitch-ovn-vtep openvswitch-devel
+
 RUN rm -rf /var/cache/yum
 
 RUN mkdir -p /var/run/openvswitch
