@@ -131,6 +131,8 @@ spec:
         env:
         - name: OVN_DAEMONSET_VERSION
           value: "3"
+        - name: OVN_LOGLEVEL_NBCTLD
+          value: "-vconsole:off -vfile:info"
         - name: K8S_APISERVER
           valueFrom:
             configMapKeyRef:
