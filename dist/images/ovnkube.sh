@@ -500,12 +500,9 @@ cleanup-ovs-server () {
 
 # set the ovnkube_db endpoint for other pods to query the OVN DB IP
 set_ovnkube_db_ep () {
-  # delete any endpoint by name ovnkube-db
-  kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
-    delete ep -n ${ovn_kubernetes_namespace} ovnkube-db 2>/dev/null
-
-  # create a new endpoint for the headless onvkube-db service without selectors
-  # using the current host has the endpoint IP
+  # update the endpoint for the headless onvkube-db service without selectors
+  # using the current host has the endpoint IP. It is safe even the endpoint already
+  # exists
   ovn_db_host=$(getent ahosts $(hostname) | head -1 | awk '{ print $1 }')
   kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} apply -f - << EOF
 apiVersion: v1
@@ -525,7 +522,7 @@ subsets:
       protocol: TCP
 EOF
     if [[ $? != 0 ]] ; then
-        echo "Failed to create endpoint with host ${ovn_db_host} for ovnkube-db service"
+        echo "Failed to update endpoint with host ${ovn_db_host} for ovnkube-db service"
         exit 1
     fi
 }
@@ -579,7 +576,7 @@ sb-ovsdb () {
   sleep 3
   ovn-sbctl set-connection ptcp:${ovn_sb_port} -- set connection . inactivity_probe=0
 
-  # create the ovnkube_db endpoint for other pods to query the OVN DB IP
+  # update the ovnkube_db endpoint for other pods to query the OVN DB IP
   set_ovnkube_db_ep
 
   tail --follow=name /var/log/openvswitch/ovsdb-server-sb.log &

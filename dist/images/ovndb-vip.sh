@@ -62,14 +62,10 @@ check_ovn_daemonset_version () {
   exit 1
 }
 
-# create the ovnkube_db endpoint for other pods to query the OVN DB IP
-create_ovnkube_db_ep () {
-  # delete any endpoint by name ovnkube-db
-  kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} \
-    delete ep -n ${ovn_kubernetes_namespace} ovnkube-db 2>/dev/null
-
-  # create a new endpoint for the headless onvkube-db service without selectors
-  # using the provided VIP
+# set the ovnkube_db endpoint for other pods to query the OVN DB IP
+set_ovnkube_db_ep () {
+  # update the endpoint for the headless onvkube-db service without selectors
+  # using the provided VIP. It is safe even the endpoint already exists
   kubectl --server=${K8S_APISERVER} --token=${k8s_token} --certificate-authority=${K8S_CACERT} apply -f - << EOF
 apiVersion: v1
 kind: Endpoints
@@ -88,7 +84,7 @@ subsets:
       protocol: TCP
 EOF
     if [[ $? != 0 ]] ; then
-        echo "Failed to create endpoint with host ${ovndb_vip} for ovnkube-db service"
+        echo "Failed to update endpoint with host ${ovndb_vip} for ovnkube-db service"
         exit 1
     fi
 }
@@ -214,9 +210,9 @@ run-ovndb () {
         echo "OVN DB HA cluster started after ${retries} retries"
         started=1
 
-        # now we can create the ovnkube-db endpoint with the ${ovndb_vip} as the IP address. with that
+        # now we can update the ovnkube-db endpoint with the ${ovndb_vip} as the IP address. with that
         # the waiting ovnkube-node and ovnkube-master PODs will continue
-        create_ovnkube_db_ep
+        set_ovnkube_db_ep
       elif [[ $ret -eq 1 ]]; then
 	echo pcs node unstandby ${ovn_pod_host}
         pcs node unstandby ${ovn_pod_host}
