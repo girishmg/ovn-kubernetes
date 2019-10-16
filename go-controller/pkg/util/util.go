@@ -43,6 +43,20 @@ func GetNodeChassisID() (string, error) {
 	return chassisID, nil
 }
 
+// DeleteChassis delete's a row in OVN SB chassis table corresponding to the nodeName.
+func DeleteChassis(nodeName, systemID string) {
+	if systemID == "" {
+		systemID, _, _ = RunOVNSbctl("--data=bare", "--no-heading", "--columns=name", "find", "chassis",
+			"hostname="+nodeName)
+	}
+	if systemID != "" {
+		_, _, err := RunOVNSbctl("--if-exist", "chassis-del", nodeName)
+		if err != nil {
+			logrus.Errorf("Error deleting chassis for node %s: %v", nodeName, err)
+		}
+	}
+}
+
 // PodAnnotation describes the pod's assigned network details
 type PodAnnotation struct {
 	// IP is the pod's assigned IP address

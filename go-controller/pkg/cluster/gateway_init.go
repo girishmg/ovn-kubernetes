@@ -136,5 +136,9 @@ func CleanupClusterNode(name string) error {
 		ovn.DelMgtPortIptRules(name)
 	}
 
+	// Remove the row in OVN SB chassis table for this node
+	systemID, _ := util.GetNodeChassisID()
+	util.DeleteChassis(name, systemID)
+
 	return nil
 }

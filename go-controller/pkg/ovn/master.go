@@ -352,6 +352,10 @@ func (oc *Controller) deleteNode(nodeName string, nodeSubnet *net.IPNet) error {
 		}
 	}
 
+	// delete this node's row in  chassis SB database, this call is required for node cleanup
+	// path from syncNodes()
+	util.DeleteChassis(nodeName, "")
+
 	return nil
 }
 

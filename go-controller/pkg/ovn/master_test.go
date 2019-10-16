@@ -283,6 +283,10 @@ subnet=%s
 				"ovn-nbctl --timeout=15 --if-exist lr-del GR_" + node1Name,
 				"ovn-nbctl --timeout=15 --if-exist ls-del ext_" + node1Name,
 			})
+			fexec.AddFakeCmd(&ovntest.ExpectedCmd{
+				Cmd:    "ovn-sbctl --timeout=15 --data=bare --no-heading --columns=name find chassis hostname=openshift-node-1",
+				Output: "",
+			})
 
 			// Expect the code to re-add the master node (which still exists)
 			// when the factory watch begins and enumerates all existing
