@@ -50,9 +50,10 @@ func DeleteChassis(nodeName, systemID string) {
 			"hostname="+nodeName)
 	}
 	if systemID != "" {
-		_, _, err := RunOVNSbctl("--if-exist", "chassis-del", nodeName)
+		_, _, err := RunOVNSbctl("--if-exist", "chassis-del", systemID)
 		if err != nil {
-			logrus.Errorf("Error deleting chassis for node %s: %v", nodeName, err)
+			logrus.Errorf("Error deleting chassis for node %s with systemID %s: %v",
+				nodeName, systemID, err)
 		}
 	}
 }
