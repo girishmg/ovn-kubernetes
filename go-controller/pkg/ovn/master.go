@@ -246,7 +246,8 @@ func (oc *Controller) ensureNodeLogicalNetwork(nodeName string, hostsubnet *net.
 
 	// Get firstIP for gateway.  Skip the second address of the LogicalSwitch's
 	// subnet since we set it aside for the management port on that node.
-	firstIP, secondIP, _ := util.GetNodeWellKnownAddresses(hostsubnet)
+	firstIP, secondIP, plen := util.GetNodeWellKnownAddresses(hostsubnet)
+	firstIP = fmt.Sprintf("%s/%d", firstIP, plen)
 
 	nodeLRPMac, stderr, err := util.RunOVNNbctl("--if-exist", "get", "logical_router_port", "rtos-"+nodeName, "mac")
 	if err != nil {

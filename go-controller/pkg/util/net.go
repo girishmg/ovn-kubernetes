@@ -95,13 +95,13 @@ func GetOVSPortMACAddress(portName string) (string, error) {
 	return macAddress, nil
 }
 
-// GetNodeWellKnownAddresses returns routerIP, Management Port IP and subnet mask
+// GetNodeWellKnownAddresses returns routerIP, Management Port IP and prefix len
 // for a given subnet
 func GetNodeWellKnownAddresses(subnet *net.IPNet) (string, string, int) {
 
 	ip := NextIP(subnet.IP)
 	prefixlen, _ := subnet.Mask.Size()
-	routerIP := fmt.Sprintf("%s/%d", ip.String(), prefixlen)
+	routerIP := ip.String()
 
 	ip = NextIP(ip)
 	mgmtIP := ip.String()
