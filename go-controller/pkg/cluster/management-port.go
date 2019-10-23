@@ -12,8 +12,7 @@ import (
 
 func createManagementPortGeneric(nodeName string, localSubnet *net.IPNet) (string, string, string, string, string, error) {
 	// Retrieve the routerIP and mangementPortIP for a given localSubnet
-	routerIP, portIP, n := util.GetNodeWellKnownAddresses(localSubnet)
-	portIPMask := fmt.Sprintf("%s/%d", portIP, n)
+	routerIP, portIP:= util.GetNodeWellKnownAddresses(localSubnet)
 
 	// Kubernetes emits events when pods are created. The event will contain
 	// only lowercase letters of the hostname even though the kubelet is
@@ -58,7 +57,7 @@ func createManagementPortGeneric(nodeName string, localSubnet *net.IPNet) (strin
 		return "", "", "", "", "", err
 	}
 
-	return interfaceName, portIPMask, macAddress, routerIP, routerMac, nil
+	return interfaceName, portIP.String(), macAddress, routerIP.IP.String(), routerMac, nil
 }
 
 // ManagementPortReady will check to see if the portMac was created
