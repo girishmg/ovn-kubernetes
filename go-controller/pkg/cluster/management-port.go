@@ -10,14 +10,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func createManagementPortGeneric(nodeName, localSubnet string) (string, string, string, string, string, error) {
-	// Determine the IP of the node switch's logical router port on the cluster router
-	ip, subnet, err := net.ParseCIDR(localSubnet)
-	if err != nil {
-		return "", "", "", "", "", fmt.Errorf("Failed to parse local subnet %s: %v", localSubnet, err)
-	}
-	ip = util.NextIP(ip)
-	routerIP := ip.String()
+func createManagementPortGeneric(nodeName string, localSubnet *net.IPNet) (string, string, string, string, string, error) {
+	// Retrieve the routerIP and mangementPortIP for a given localSubnet
+	routerIP, portIP, n := util.GetNodeWellKnownAddresses(localSubnet)
+	portIPMask := fmt.Sprintf("%s/%d", portIP, n)
 
 	// Kubernetes emits events when pods are created. The event will contain
 	// only lowercase letters of the hostname even though the kubelet is
@@ -53,10 +49,6 @@ func createManagementPortGeneric(nodeName, localSubnet string) (string, string, 
 		logrus.Errorf("Failed to get management port MAC address: %v", err)
 		return "", "", "", "", "", err
 	}
-
-	// The management port is assigned the second IP in the subnet.
-	_, portIP, n := util.GetNodeWellKnownAddresses(subnet)
-	portIPMask := fmt.Sprintf("%s/%d", portIP, n)
 
 	// switch-to-router ports only have MAC address and nothing else.
 	routerMac, stderr, err := util.RunOVNNbctl("lsp-get-addresses", "stor-"+nodeName)
