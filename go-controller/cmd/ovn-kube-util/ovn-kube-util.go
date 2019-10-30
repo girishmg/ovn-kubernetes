@@ -18,9 +18,11 @@ func main() {
 	c.Commands = []cli.Command{
 		app.NicsToBridgeCommand,
 		app.BridgesToNicCommand,
+		app.ReadinessProbeCommand,
 	}
 
 	if err := c.Run(os.Args); err != nil {
 		logrus.Fatal(err)
+		os.Exit(1)
 	}
 }

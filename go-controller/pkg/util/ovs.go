@@ -185,20 +185,30 @@ func RunOVSOfctl(args ...string) (string, string, error) {
 	return strings.Trim(stdout.String(), "\" \n"), stderr.String(), err
 }
 
-// RunOVSVsctl runs a command via ovs-vsctl.
-func RunOVSVsctl(args ...string) (string, string, error) {
-	cmdArgs := []string{fmt.Sprintf("--timeout=%d", ovsCommandTimeout)}
+// RunOVSVsctlWithTimeout runs a command via ovs-vsctl.
+func RunOVSVsctlWithTimeout(timeout int, args ...string) (string, string, error) {
+	cmdArgs := []string{fmt.Sprintf("--timeout=%d", timeout)}
 	cmdArgs = append(cmdArgs, args...)
 	stdout, stderr, err := run(runner.vsctlPath, cmdArgs...)
 	return strings.Trim(strings.TrimSpace(stdout.String()), "\""), stderr.String(), err
 }
 
-// RunOVSAppctl runs a command via ovs-appctl.
-func RunOVSAppctl(args ...string) (string, string, error) {
-	cmdArgs := []string{fmt.Sprintf("--timeout=%d", ovsCommandTimeout)}
+// RunOVSVsctl runs a command via ovs-vsctl.
+func RunOVSVsctl(args ...string) (string, string, error) {
+	return RunOVSVsctlWithTimeout(ovsCommandTimeout, args...)
+}
+
+// RunOVSAppctlWithTimeout runs a command via ovs-appctl.
+func RunOVSAppctlWithTimeout(timeout int, args ...string) (string, string, error) {
+	cmdArgs := []string{fmt.Sprintf("--timeout=%d", timeout)}
 	cmdArgs = append(cmdArgs, args...)
 	stdout, stderr, err := run(runner.appctlPath, cmdArgs...)
 	return strings.Trim(strings.TrimSpace(stdout.String()), "\""), stderr.String(), err
+}
+
+// RunOVSAppctl runs a command via ovs-appctl.
+func RunOVSAppctl(args ...string) (string, string, error) {
+	return RunOVSAppctlWithTimeout(ovsCommandTimeout, args...)
 }
 
 // Run the ovn-ctl command and retry if "Connection refused"

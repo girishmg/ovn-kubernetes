@@ -89,6 +89,11 @@ spec:
           preStop:
             exec:
               command: ["/root/ovnkube.sh", "cleanup-ovs-server"]
+        readinessProbe:
+          exec:
+            command: ["/usr/bin/ovn-kube-util", "readiness-probe", "-t", "ovs-daemons"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
 
       - name: ovn-controller
         image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
@@ -155,6 +160,11 @@ spec:
         #     port: 10258
         #     scheme: HTTP
         lifecycle:
+        readinessProbe:
+          exec:
+            command: ["/usr/bin/ovn-kube-util", "readiness-probe", "-t", "ovn-controller"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
 
       - name: ovnkube-node
         image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"

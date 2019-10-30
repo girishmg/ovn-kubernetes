@@ -107,6 +107,11 @@ spec:
         #     port: 10257
         #     scheme: HTTP
         lifecycle:
+        readinessProbe:
+          exec:
+            command: ["/usr/bin/ovn-kube-util", "readiness-probe", "-t", "ovn-northd"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
       # end of container
 
       - name: run-nbctld
@@ -149,6 +154,11 @@ spec:
         #     port: 10258
         #     scheme: HTTP
         lifecycle:
+        readinessProbe:
+          exec:
+            command: ["/usr/bin/ovn-kube-util", "readiness-probe", "-t", "ovn-nbctl"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
 
       - name: ovnkube-master
         image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
