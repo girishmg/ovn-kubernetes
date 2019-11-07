@@ -56,9 +56,17 @@ func (k *Kube) SetAnnotationOnPod(pod *kapi.Pod, key, value string) error {
 }
 
 // SetAnnotationOnNode takes the node object and key/value string pair to set it as an annotation
+// if value is empty string, remove the annotation
 func (k *Kube) SetAnnotationOnNode(node *kapi.Node, key, value string) error {
+	var patchData string
+
 	logrus.Infof("Setting annotations %s=%s on node %s", key, value, node.Name)
-	patchData := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%s"}}}`, key, value)
+	if value != "" {
+		patchData = fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%s"}}}`, key, value)
+	} else {
+		patchData = fmt.Sprintf(`{"metadata":{"annotations":{"%s":null}}}`, key)
+	}
+
 	_, err := k.KClient.CoreV1().Nodes().Patch(node.Name, types.MergePatchType, []byte(patchData))
 	if err != nil {
 		logrus.Errorf("Error in setting annotation on node %s: %v", node.Name, err)

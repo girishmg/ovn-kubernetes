@@ -17,8 +17,14 @@ import (
 )
 
 const (
-	// OvnHostSubnet is the constant string representing the annotation key
-	OvnHostSubnet = "ovn_host_subnet"
+	// OvnPodAnnotationLegacyName is the old POD annotation key string, kept for backward compatibility only
+	OvnPodAnnotationLegacyName = "ovn"
+	// OvnPodAnnotationName is the constant string representing the POD annotation key
+	OvnPodAnnotationName = "k8s.ovn.org/ovn"
+	// OvnHostSubnetLegacy is the old constant string representing the node subnet annotation key
+	OvnHostSubnetLegacy = "ovn_host_subnet"
+	// OvnHostSubnet is the constant string representing the node subnet annotation key
+	OvnHostSubnet = "k8s.ovn.org/node-subnet"
 	// OvnClusterRouter is the name of the distributed router
 	OvnClusterRouter = "ovn_cluster_router"
 	// OvnNodeManagementPortMacAddress is the constant string representing the annotation key
@@ -42,7 +48,12 @@ func (oc *Controller) StartClusterMaster(masterNodeName string) error {
 		return err
 	}
 	for _, node := range existingNodes.Items {
-		hostsubnet, ok := node.Annotations[OvnHostSubnet]
+		var hostsubnet string
+		var ok bool
+		hostsubnet, ok = node.Annotations[OvnHostSubnet]
+		if !ok {
+			hostsubnet, ok = node.Annotations[OvnHostSubnetLegacy]
+		}
 		if ok {
 			alreadyAllocated = append(alreadyAllocated, hostsubnet)
 		}
@@ -339,7 +350,35 @@ func (oc *Controller) ensureNodeLogicalNetwork(nodeName string, hostsubnet *net.
 func (oc *Controller) addNode(node *kapi.Node) (hostsubnet *net.IPNet, err error) {
 	oc.clearInitialNodeNetworkUnavailableCondition(node)
 
-	hostsubnet, _ = parseNodeHostSubnet(node)
+	// For backward compatibility: if there is legacy OvnHostSubnet label, remove it;
+	// and set the label with the right prefix
+	legacysub, legacyOk := node.Annotations[OvnHostSubnetLegacy]
+	sub, ok := node.Annotations[OvnHostSubnet]
+	if legacyOk {
+		err := oc.kube.SetAnnotationOnNode(node, OvnHostSubnetLegacy, "")
+		if err != nil {
+			logrus.Errorf("Failed to remove node %s %s annotation: %v",
+				node.Name, OvnHostSubnetLegacy, err)
+		}
+
+		if !ok {
+			sub = legacysub
+			err = oc.kube.SetAnnotationOnNode(node, OvnHostSubnet, sub)
+			if err != nil {
+				logrus.Errorf("Failed to set node %s %s annotation to %q: %v",
+					node.Name, OvnHostSubnet, sub, err)
+				return nil, err
+			}
+		}
+	}
+
+	if ok || legacyOk {
+		_, hostsubnet, err = net.ParseCIDR(sub)
+		if err != nil {
+			return nil, fmt.Errorf("Error in parsing hostsubnet %s on node %s - %v", sub, node.Name, err)
+		}
+	}
+
 	if hostsubnet != nil {
 		// Node already has subnet assigned; ensure its logical network is set up
 		return hostsubnet, oc.ensureNodeLogicalNetwork(node.Name, hostsubnet)
