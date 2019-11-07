@@ -345,7 +345,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) {
 	}
 
 	logrus.Debugf("Annotation values: ip=%s ; mac=%s ; gw=%s\nAnnotation=%s",
-		podCIDR, podMac, gatewayIP, annotation)
+		podCIDR, podMac, gatewayIP, marshalledAnnotation)
 	err = oc.kube.SetAnnotationOnPod(pod, "ovn", marshalledAnnotation)
 	if err != nil {
 		logrus.Errorf("Failed to set annotation on pod %s - %v", pod.Name, err)
