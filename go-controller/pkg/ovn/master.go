@@ -44,6 +44,10 @@ const (
 	OvnNodeGatewayNextHop = "next-hop"
 	// OvnDefaultNetworkGateway captures L3 gateway config for default OVN network interface
 	OvnDefaultNetworkGateway = "default"
+	// OvnNodeGatewayNodeIP is the Node IP
+	OvnNodeGatewayNodeIP = "node-gateway-node-ip"
+	// OvnAnnotationLocalSuffix is the suffix string for local only gateway annotation
+	OvnAnnotationLocalSuffix = "-local"
 )
 
 // StartClusterMaster runs a subnet IPAM and a controller that watches arrival/departure
@@ -285,38 +289,64 @@ func UnmarshalNodeL3GatewayAnnotation(node *kapi.Node) (map[string]string, error
 	return l3GatewayConfig, nil
 }
 
-func parseGatewayIfaceID(l3GatewayConfig map[string]string) (string, error) {
-	ifaceID, ok := l3GatewayConfig[OvnNodeGatewayIfaceID]
+func parseGatewayIfaceID(l3GatewayConfig map[string]string, localOnly bool) (string, error) {
+	annotation := OvnNodeGatewayIfaceID
+	if localOnly {
+		annotation += OvnAnnotationLocalSuffix
+	}
+	ifaceID, ok := l3GatewayConfig[annotation]
 	if !ok || ifaceID == "" {
-		return "", fmt.Errorf("%s annotation not found or invalid", OvnNodeGatewayIfaceID)
+		return "", fmt.Errorf("%s annotation not found or invalid", annotation)
 	}
 
 	return ifaceID, nil
 }
 
-func parseGatewayMacAddress(l3GatewayConfig map[string]string) (string, error) {
-	gatewayMacAddress, ok := l3GatewayConfig[OvnNodeGatewayMacAddress]
+func parseGatewayNodeIP(l3GatewayConfig map[string]string) (string, error) {
+	annotation := OvnNodeGatewayNodeIP
+	nodeIP, ok := l3GatewayConfig[annotation]
+	if !ok || nodeIP == "" {
+		return "", fmt.Errorf("%s annotation not found or invalid", annotation)
+	}
+
+	return nodeIP, nil
+}
+
+func parseGatewayMacAddress(l3GatewayConfig map[string]string, localOnly bool) (string, error) {
+	annotation := OvnNodeGatewayMacAddress
+	if localOnly {
+		annotation += OvnAnnotationLocalSuffix
+	}
+	gatewayMacAddress, ok := l3GatewayConfig[annotation]
 	if !ok {
-		return "", fmt.Errorf("%s annotation not found", OvnNodeGatewayMacAddress)
+		return "", fmt.Errorf("%s annotation not found", annotation)
 	}
 
 	_, err := net.ParseMAC(gatewayMacAddress)
 	if err != nil {
-		return "", fmt.Errorf("Error %v in parsing node gateway macAddress %v", err, gatewayMacAddress)
+		return "", fmt.Errorf("Error %v in parsing node annotation %s: %v", err, annotation, gatewayMacAddress)
 	}
 
 	return gatewayMacAddress, nil
 }
 
-func parseGatewayLogicalNetwork(l3GatewayConfig map[string]string) (string, string, error) {
-	ipAddress, ok := l3GatewayConfig[OvnNodeGatewayIP]
+func parseGatewayLogicalNetwork(l3GatewayConfig map[string]string, localOnly bool) (string, string, error) {
+	annotation := OvnNodeGatewayIP
+	if localOnly {
+		annotation += OvnAnnotationLocalSuffix
+	}
+	ipAddress, ok := l3GatewayConfig[annotation]
 	if !ok {
-		return "", "", fmt.Errorf("%s annotation not found", OvnNodeGatewayIP)
+		return "", "", fmt.Errorf("%s annotation not found", annotation)
 	}
 
-	gwNextHop, ok := l3GatewayConfig[OvnNodeGatewayNextHop]
+	annotation = OvnNodeGatewayNextHop
+	if localOnly {
+		annotation += OvnAnnotationLocalSuffix
+	}
+	gwNextHop, ok := l3GatewayConfig[annotation]
 	if !ok {
-		return "", "", fmt.Errorf("%s annotation not found", OvnNodeGatewayNextHop)
+		return "", "", fmt.Errorf("%s annotation not found", annotation)
 	}
 
 	return ipAddress, gwNextHop, nil
@@ -350,17 +380,17 @@ func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig
 	}
 
 	mode := l3GatewayConfig[OvnNodeGatewayMode]
-	ifaceID, err := parseGatewayIfaceID(l3GatewayConfig)
+	ifaceID, err := parseGatewayIfaceID(l3GatewayConfig, false)
 	if err != nil {
 		return err
 	}
 
-	gwMacAddress, err := parseGatewayMacAddress(l3GatewayConfig)
+	gwMacAddress, err := parseGatewayMacAddress(l3GatewayConfig, false)
 	if err != nil {
 		return err
 	}
 
-	ipAddress, gwNextHop, err := parseGatewayLogicalNetwork(l3GatewayConfig)
+	ipAddress, gwNextHop, err := parseGatewayLogicalNetwork(l3GatewayConfig, false)
 	if err != nil {
 		return err
 	}
@@ -374,19 +404,38 @@ func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig
 		}
 	}
 
-	err = util.GatewayInit(clusterSubnets, node.Name, ifaceID, ipAddress,
-		gwMacAddress, gwNextHop, subnet, true, lspArgs)
-	if err != nil {
-		return fmt.Errorf("failed to init shared interface gateway: %v", err)
-	}
-
+	// Add local only gateway to allow local service access
 	if mode == string(config.GatewayModeShared) {
-		// Add static routes to OVN Cluster Router to enable pods on this Node to
-		// reach the host IP
-		err = addStaticRouteToHost(node, ipAddress)
+		LocalOnlyIfaceID, err := parseGatewayIfaceID(l3GatewayConfig, true)
 		if err != nil {
 			return err
 		}
+
+		localOnlyGwMacAddress, err := parseGatewayMacAddress(l3GatewayConfig, true)
+		if err != nil {
+			return err
+		}
+
+		localOnlyIpAddress, localOnlyGwNextHop, err := parseGatewayLogicalNetwork(l3GatewayConfig, true)
+		if err != nil {
+			return err
+		}
+
+		nodeIP, err := parseGatewayNodeIP(l3GatewayConfig)
+		if err != nil {
+			return err
+		}
+		err = util.LocalGatewayInit(clusterSubnets, node.Name, nodeIP, LocalOnlyIfaceID, localOnlyIpAddress,
+			localOnlyGwMacAddress, localOnlyGwNextHop, util.LocalNetworkName)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = util.GatewayInit(clusterSubnets, node.Name, ifaceID, ipAddress,
+		gwMacAddress, gwNextHop, subnet, util.PhysicalNetworkName, lspArgs)
+	if err != nil {
+		return fmt.Errorf("failed to init shared interface gateway: %v", err)
 	}
 
 	if config.Gateway.NodeportEnable {
@@ -394,29 +443,6 @@ func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig
 	}
 
 	return err
-}
-
-func addStaticRouteToHost(node *kapi.Node, nicIP string) error {
-	k8sClusterRouter, err := util.GetK8sClusterRouter()
-	if err != nil {
-		return err
-	}
-
-	subnet, err := parseNodeHostSubnet(node)
-	if err != nil {
-		return fmt.Errorf("failed to get interface IP address for %s (%v)",
-			util.GetK8sMgmtIntfName(node.Name), err)
-	}
-	_, secondIP := util.GetNodeWellKnownAddresses(subnet)
-	prefix := strings.Split(nicIP, "/")[0] + "/32"
-	nexthop := strings.Split(secondIP.String(), "/")[0]
-	_, stderr, err := util.RunOVNNbctl("--may-exist", "lr-route-add", k8sClusterRouter, prefix, nexthop)
-	if err != nil {
-		return fmt.Errorf("failed to add static route '%s via %s' for host %q on %s "+
-			"stderr: %q, error: %v", nicIP, secondIP, node.Name, k8sClusterRouter, stderr, err)
-	}
-
-	return nil
 }
 
 func parseNodeHostSubnet(node *kapi.Node) (*net.IPNet, error) {
