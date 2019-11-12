@@ -172,7 +172,7 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod) {
 	}
 
 	var podIP net.IP
-	podAnnotation, err := util.UnmarshalPodAnnotation(pod.Annotations["ovn"])
+	podAnnotation, err := util.UnmarshalPodAnnotation(getPodNetworkAnnotation(pod.Annotations))
 	if err != nil {
 		logrus.Errorf("Error in deleting pod logical port; failed "+
 			"to read pod annotation: %v", err)
@@ -248,7 +248,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) error {
 	portName := podLogicalPortName(pod)
 	logrus.Debugf("Creating logical port for %s on switch %s", portName, logicalSwitch)
 
-	annotation, err := util.UnmarshalPodAnnotation(pod.Annotations["ovn"])
+	annotation, err := util.UnmarshalPodAnnotation(getPodNetworkAnnotation(pod.Annotations))
 	annotationsSet := (err == nil)
 
 	// If pod already has annotations, just add the lsp with static ip/mac.
@@ -332,8 +332,16 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) error {
 
 	logrus.Debugf("Annotation values: ip=%s ; mac=%s ; gw=%s\nAnnotation=%s",
 		podCIDR, podMac, gatewayIP, marshalledAnnotation)
-	if err = oc.kube.SetAnnotationOnPod(pod, "ovn", marshalledAnnotation); err != nil {
-		return fmt.Errorf("Failed to set annotation on pod %s - %v", pod.Name, err)
+
+	// Need to set pod annotation using both legacy and new key. This is in case if there
+	// are some nodes that have not been upgraded to understand the new Pod annotation
+	err = oc.kube.SetAnnotationOnPod(pod, OvnPodAnnotationName, marshalledAnnotation)
+	if err != nil {
+		logrus.Errorf("Failed to set legacy annotation on pod %s - %v", pod.Name, err)
+	}
+	err = oc.kube.SetAnnotationOnPod(pod, OvnPodAnnotationLegacyName, marshalledAnnotation)
+	if err != nil {
+		logrus.Errorf("Failed to set annotation on pod %s - %v", pod.Name, err)
 	}
 
 	// If we're setting the annotation for the first time, observe the creation
@@ -343,4 +351,13 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) error {
 	}
 
 	return nil
+}
+
+func getPodNetworkAnnotation(annotation map[string]string) string {
+	ovnAnnotation, ok := annotation[OvnPodAnnotationName]
+	if !ok {
+		ovnAnnotation = annotation[OvnPodAnnotationLegacyName]
+	}
+
+	return ovnAnnotation
 }

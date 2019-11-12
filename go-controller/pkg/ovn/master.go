@@ -17,6 +17,10 @@ import (
 )
 
 const (
+	// OvnPodAnnotationLegacyName is the old POD annotation key string, kept for backward compatibility only
+	OvnPodAnnotationLegacyName = "ovn"
+	// OvnPodAnnotationName is the constant string representing the POD annotation key
+	OvnPodAnnotationName = "k8s.ovn.org/pod-network"
 	// OvnHostSubnet is the constant string representing the annotation key
 	OvnHostSubnet = "ovn_host_subnet"
 	// OvnClusterRouter is the name of the distributed router

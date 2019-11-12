@@ -13,6 +13,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
@@ -82,7 +83,7 @@ func (pr *PodRequest) cmdAdd() ([]byte, error) {
 			logrus.Warningf("error getting pod annotations: %v", err)
 			return false, nil
 		}
-		if ovnAnnotation = annotations["ovn"]; ovnAnnotation != "" {
+		if ovnAnnotation = annotations[ovn.OvnPodAnnotationName]; ovnAnnotation != "" {
 			return true, nil
 		}
 		return false, nil
