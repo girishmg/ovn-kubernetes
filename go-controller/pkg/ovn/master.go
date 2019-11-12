@@ -25,28 +25,18 @@ const (
 	OvnNodeManagementPortMacAddress = "k8s.ovn.org/node-mgmt-port-mac-address"
 )
 
-// StartClusterMaster runs a subnet IPAM and a controller that watches arrival/departure
-// of nodes in the cluster
+// master runs a subnet IPAM and a controller that watches arrival/departure of nodes in the cluster
 // On an addition to the cluster (node create), a new subnet is created for it that will translate
 // to creation of a logical switch (done by the node, but could be created here at the master process too)
 // Upon deletion of a node, the switch will be deleted
 //
 // TODO: Verify that the cluster was not already called with a different global subnet
 //  If true, then either quit or perform a complete reconfiguration of the cluster (recreate switches/routers with new subnet values)
-func (oc *Controller) StartClusterMaster(masterNodeName string) error {
-
-	alreadyAllocated := make([]string, 0)
-	existingNodes, err := oc.kube.GetNodes()
-	if err != nil {
-		logrus.Errorf("Error in initializing/fetching subnets: %v", err)
-		return err
-	}
-	for _, node := range existingNodes.Items {
-		hostsubnet, ok := node.Annotations[OvnHostSubnet]
-		if ok {
-			alreadyAllocated = append(alreadyAllocated, hostsubnet)
-		}
-	}
+//
+// initSubnetAllocator initialize the subnet allocator. this reserves the already allocated node subnets which
+// are annotated on the nodes. If this returns error, the subsequent addNode() handler will fail to allocate new
+// subnet and return error.
+func (oc *Controller) initSubnetAllocator(alreadyAllocated []string) error {
 	masterSubnetAllocatorList := make([]*allocator.SubnetAllocator, 0)
 	// NewSubnetAllocator is a subnet IPAM, which takes a CIDR (first argument)
 	// and gives out subnets of length 'hostSubnetLength' (second argument)
@@ -69,6 +59,11 @@ func (oc *Controller) StartClusterMaster(masterNodeName string) error {
 		masterSubnetAllocatorList = append(masterSubnetAllocatorList, subnetAllocator)
 	}
 	oc.masterSubnetAllocatorList = masterSubnetAllocatorList
+	return nil
+}
+
+// StartClusterMaster initialize OVN logical topology
+func (oc *Controller) StartClusterMaster(masterNodeName string) error {
 
 	if _, _, err := util.RunOVNNbctl("--columns=_uuid", "list", "port_group"); err == nil {
 		oc.portGroupSupport = true
@@ -483,7 +478,9 @@ func (oc *Controller) clearInitialNodeNetworkUnavailableCondition(origNode *kapi
 }
 
 func (oc *Controller) syncNodes(nodes []interface{}) {
+	// key is nodeName, value is subnet
 	foundNodes := make(map[string]*kapi.Node)
+	alreadyAllocated := make([]string, 0)
 	for _, tmp := range nodes {
 		node, ok := tmp.(*kapi.Node)
 		if !ok {
@@ -491,6 +488,17 @@ func (oc *Controller) syncNodes(nodes []interface{}) {
 			continue
 		}
 		foundNodes[node.Name] = node
+		hostsubnet, ok := node.Annotations[OvnHostSubnet]
+		if ok {
+			alreadyAllocated = append(alreadyAllocated, hostsubnet)
+		}
+	}
+
+	// Initialize the subnet allocator now, to prevent node subnets being leaked for those nodes
+	// deleted before WatchNodes()
+	if err := oc.initSubnetAllocator(alreadyAllocated); err != nil {
+		logrus.Errorf("failed to initialize the subnet allocator: %v", err)
+		return
 	}
 
 	// We only deal with cleaning up nodes that shouldn't exist here, since
