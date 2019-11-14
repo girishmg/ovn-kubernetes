@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/sirupsen/logrus"
 	kapi "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -172,7 +172,7 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod) {
 	}
 
 	var podIP net.IP
-	podAnnotation, err := util.UnmarshalPodAnnotation(getPodNetworkAnnotation(pod.Annotations))
+	podAnnotation, err := GetPodAnnotationOVNInfo(pod.Annotations, "default")
 	if err != nil {
 		logrus.Errorf("Error in deleting pod logical port; failed "+
 			"to read pod annotation: %v", err)
@@ -248,7 +248,7 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) error {
 	portName := podLogicalPortName(pod)
 	logrus.Debugf("Creating logical port for %s on switch %s", portName, logicalSwitch)
 
-	annotation, err := util.UnmarshalPodAnnotation(getPodNetworkAnnotation(pod.Annotations))
+	annotation, err := GetPodAnnotationOVNInfo(pod.Annotations, "default")
 	annotationsSet := (err == nil)
 
 	// If pod already has annotations, just add the lsp with static ip/mac.
@@ -319,27 +319,33 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) error {
 			"stdout: %q, stderr: %q (%v)", portName, out, stderr, err)
 	}
 
-	marshalledAnnotation, err := util.MarshalPodAnnotation(&util.PodAnnotation{
+	podAnnotation := &util.PodAnnotation{
 		IP:  podCIDR,
 		MAC: podMac,
 		GW:  gatewayIP.IP,
-	})
+	}
+	podAnnotations := map[string]*util.PodAnnotation{"default": podAnnotation}
+
+	marshalledLegacyAnnotation, err := util.MarshalLegacyPodAnnotation(podAnnotation)
+	if err != nil {
+		return fmt.Errorf("error creating pod network legacy annotation: %v", err)
+	}
+	marshalledAnnotation, err := util.MarshalPodAnnotation(podAnnotations)
 	if err != nil {
 		return fmt.Errorf("error creating pod network annotation: %v", err)
 	}
-
 	oc.addPodToNamespace(pod.Namespace, podIP, portName)
 
-	logrus.Debugf("Annotation values: ip=%s ; mac=%s ; gw=%s\nAnnotation=%s",
-		podCIDR, podMac, gatewayIP, marshalledAnnotation)
+	logrus.Debugf("Annotation values: ip=%s ; mac=%s ; gw=%s\nAnnotation=%s\nLegacyAnnotation=%s",
+		podCIDR, podMac, gatewayIP, marshalledAnnotation, marshalledLegacyAnnotation)
 
 	// Need to set pod annotation using both legacy and new key. This is in case if there
 	// are some nodes that have not been upgraded to understand the new Pod annotation
-	err = oc.kube.SetAnnotationOnPod(pod, OvnPodAnnotationName, marshalledAnnotation)
-	if err != nil {
-		logrus.Errorf("Failed to set legacy annotation on pod %s - %v", pod.Name, err)
-	}
-	err = oc.kube.SetAnnotationOnPod(pod, OvnPodAnnotationLegacyName, marshalledAnnotation)
+	err = oc.kube.SetAnnotationsOnPod(pod, map[string]string{
+		OvnPodAnnotationName:       marshalledAnnotation,
+		OvnPodAnnotationLegacyName: marshalledLegacyAnnotation,
+	})
+
 	if err != nil {
 		logrus.Errorf("Failed to set annotation on pod %s - %v", pod.Name, err)
 	}
@@ -353,11 +359,26 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) error {
 	return nil
 }
 
-func getPodNetworkAnnotation(annotation map[string]string) string {
+// GetPodAnnotationOVNInfo parse the pod annotations and get its OVN network info for a specific network
+func GetPodAnnotationOVNInfo(annotation map[string]string, netName string) (podAnnotation *util.PodAnnotation, err error) {
 	ovnAnnotation, ok := annotation[OvnPodAnnotationName]
 	if !ok {
-		ovnAnnotation = annotation[OvnPodAnnotationLegacyName]
+		if netName != "default" {
+			return nil, fmt.Errorf("OVN network pod annotation does not exist for network %s", netName)
+		}
+		ovnAnnotation, ok = annotation[OvnPodAnnotationLegacyName]
+		if !ok {
+			return nil, fmt.Errorf("OVN network pod annotation does not exist for network %s", netName)
+		}
+		return util.UnmarshalLegacyPodAnnotation(ovnAnnotation)
+	}
+	podAnnotationMap, err := util.UnmarshalPodAnnotation(ovnAnnotation)
+	if err != nil {
+		return nil, fmt.Errorf("OVN network pod annotation does not exist for network %s", netName)
+	}
+	if podAnnotation, ok = podAnnotationMap[netName]; !ok {
+		return nil, fmt.Errorf("OVN network pod annotation does not exist for network %s", netName)
 	}
 
-	return ovnAnnotation
+	return podAnnotation, nil
 }

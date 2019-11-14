@@ -91,7 +91,7 @@ func (pr *PodRequest) cmdAdd() ([]byte, error) {
 		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
 	}
 
-	podInfo, err := util.UnmarshalPodAnnotation(ovnAnnotation)
+	podInfo, err := ovn.GetPodAnnotationOVNInfo(annotations, "default")
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal ovn annotation: %v", err)
 	}

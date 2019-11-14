@@ -77,10 +77,10 @@ type podRoute struct {
 	NextHop string `json:"nextHop"`
 }
 
-// MarshalPodAnnotation returns a JSON-formatted annotation describing the pod's
-// network details
-func MarshalPodAnnotation(podInfo *PodAnnotation) (string, error) {
+// convert PodAnnotation entity to its json form podAnnotation structure
+func podInfoToPodAnnoation(podInfo *PodAnnotation) *podAnnotation {
 	var gw string
+
 	if podInfo.GW != nil {
 		gw = podInfo.GW.String()
 	}
@@ -99,18 +99,11 @@ func MarshalPodAnnotation(podInfo *PodAnnotation) (string, error) {
 			NextHop: nh,
 		})
 	}
-
-	bytes, err := json.Marshal(pa)
-	return string(bytes), err
+	return &pa
 }
 
-// UnmarshalPodAnnotation returns a the unmarshalled pod annotation
-func UnmarshalPodAnnotation(annotation string) (*PodAnnotation, error) {
-	a := &podAnnotation{}
-	if err := json.Unmarshal([]byte(annotation), a); err != nil {
-		return nil, err
-	}
-
+// convert json form podAnnotation entity to its PodAnnotation form structure
+func podAnnotationToPodInfo(a *podAnnotation) (*PodAnnotation, error) {
 	podAnnotation := &PodAnnotation{}
 	// Minimal validation
 	ip, ipnet, err := net.ParseCIDR(a.IP)
@@ -146,6 +139,55 @@ func UnmarshalPodAnnotation(annotation string) (*PodAnnotation, error) {
 		}
 		podAnnotation.Routes = append(podAnnotation.Routes, route)
 	}
-
 	return podAnnotation, nil
+}
+
+// MarshalLegacyPodAnnotation returns a the legacy JSON-formatted annotation describing
+// the pod's network details
+func MarshalLegacyPodAnnotation(podInfo *PodAnnotation) (string, error) {
+	pa := podInfoToPodAnnoation(podInfo)
+
+	bytes, err := json.Marshal(pa)
+	return string(bytes), err
+}
+
+// UnmarshalLegacyPodAnnotation returns the unmarshalled legacy pod annotation
+func UnmarshalLegacyPodAnnotation(annotation string) (*PodAnnotation, error) {
+	a := &podAnnotation{}
+	if err := json.Unmarshal([]byte(annotation), &a); err != nil {
+		return nil, err
+	}
+
+	return podAnnotationToPodInfo(a)
+}
+
+// MarshalPodAnnotation returns a JSON-formatted annotation describing the pod's
+// network details
+func MarshalPodAnnotation(podInfoMap map[string]*PodAnnotation) (string, error) {
+	paMap := make(map[string]*podAnnotation)
+	for netName, podInfo := range podInfoMap {
+		paMap[netName] = podInfoToPodAnnoation(podInfo)
+	}
+
+	bytes, err := json.Marshal(paMap)
+	return string(bytes), err
+}
+
+// UnmarshalPodAnnotation returns a the unmarshalled pod annotation
+func UnmarshalPodAnnotation(annotation string) (map[string]*PodAnnotation, error) {
+	aMap := make(map[string]*podAnnotation)
+	if err := json.Unmarshal([]byte(annotation), &aMap); err != nil {
+		return nil, err
+	}
+
+	podInfoMap := make(map[string]*PodAnnotation)
+	for netName, a := range aMap {
+		podInfo, err := podAnnotationToPodInfo(a)
+		if err != nil {
+			return nil, err
+		}
+		podInfoMap[netName] = podInfo
+	}
+
+	return podInfoMap, nil
 }

@@ -527,7 +527,7 @@ func (oc *Controller) handleLocalPodSelectorAddFuncOld(
 	obj interface{}) {
 	pod := obj.(*kapi.Pod)
 
-	if _, err := util.UnmarshalPodAnnotation(getPodNetworkAnnotation(pod.Annotations)); err != nil {
+	if _, err := GetPodAnnotationOVNInfo(pod.Annotations, "default"); err != nil {
 		return
 	}
 
