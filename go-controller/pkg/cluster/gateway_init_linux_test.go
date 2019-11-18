@@ -4,6 +4,7 @@ package cluster
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"syscall"
@@ -158,15 +159,21 @@ cookie=0x0, duration=8366.597s, table=1, n_packets=10641, n_bytes=10370087, prio
 		existingNode := v1.Node{ObjectMeta: metav1.ObjectMeta{
 			Name: nodeName,
 			Annotations: map[string]string{
-				ovn.OvnHostSubnet:            nodeSubnet,
-				ovn.OvnNodeGatewayMode:       string(config.Gateway.Mode),
-				ovn.OvnNodeGatewayVlanID:     string(gatewayVLANID),
-				ovn.OvnNodeGatewayIfaceID:    gwRouter,
-				ovn.OvnNodeGatewayMacAddress: lrpMAC,
-				ovn.OvnNodeGatewayIP:         lrpIP,
-				//ovn.OvnNodeGatewayNextHop:    localnetGatewayNextHop,
+				ovn.OvnHostSubnet: nodeSubnet,
 			},
 		}}
+		l3GatewayConfig := map[string]string{
+			ovn.OvnNodeGatewayMode:       string(config.Gateway.Mode),
+			ovn.OvnNodeGatewayVlanID:     string(gatewayVLANID),
+			ovn.OvnNodeGatewayIfaceID:    gwRouter,
+			ovn.OvnNodeGatewayMacAddress: lrpMAC,
+			ovn.OvnNodeGatewayIP:         lrpIP,
+			//ovn.OvnNodeGatewayNextHop:    localnetGatewayNextHop,
+		}
+		bytestring, err := json.Marshal(map[string]map[string]string{"default": l3GatewayConfig})
+		Expect(err).NotTo(HaveOccurred())
+		existingNode.Annotations[ovn.OvnNodeL3GatewayConfig] = string(bytestring)
+
 		fakeClient := fake.NewSimpleClientset(&v1.NodeList{
 			Items: []v1.Node{existingNode},
 		})
@@ -299,15 +306,21 @@ var _ = Describe("Gateway Init Operations", func() {
 			existingNode := v1.Node{ObjectMeta: metav1.ObjectMeta{
 				Name: nodeName,
 				Annotations: map[string]string{
-					ovn.OvnHostSubnet:            nodeSubnet,
-					ovn.OvnNodeGatewayMode:       string(config.Gateway.Mode),
-					ovn.OvnNodeGatewayVlanID:     string(0),
-					ovn.OvnNodeGatewayIfaceID:    gwRouter,
-					ovn.OvnNodeGatewayMacAddress: lrpMAC,
-					ovn.OvnNodeGatewayIP:         lrpIP,
-					//ovn.OvnNodeGatewayNextHop:    localnetGatewayNextHop,
+					ovn.OvnHostSubnet: nodeSubnet,
 				},
 			}}
+			l3GatewayConfig := map[string]string{
+				ovn.OvnNodeGatewayMode:       string(config.Gateway.Mode),
+				ovn.OvnNodeGatewayVlanID:     string(0),
+				ovn.OvnNodeGatewayIfaceID:    gwRouter,
+				ovn.OvnNodeGatewayMacAddress: lrpMAC,
+				ovn.OvnNodeGatewayIP:         lrpIP,
+				//ovn.OvnNodeGatewayNextHop:    localnetGatewayNextHop,
+			}
+			bytestring, err := json.Marshal(map[string]map[string]string{"default": l3GatewayConfig})
+			Expect(err).NotTo(HaveOccurred())
+			existingNode.Annotations[ovn.OvnNodeL3GatewayConfig] = string(bytestring)
+
 			fakeClient := fake.NewSimpleClientset(&v1.NodeList{
 				Items: []v1.Node{existingNode},
 			})

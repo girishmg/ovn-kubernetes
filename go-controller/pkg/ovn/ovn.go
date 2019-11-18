@@ -475,17 +475,17 @@ func (oc *Controller) WatchNamespaces() error {
 	return err
 }
 
-func (oc *Controller) syncNodeGateway(node *kapi.Node, subnet *net.IPNet) error {
+func (oc *Controller) syncNodeGateway(node *kapi.Node, l3GatewayConfig map[string]string, subnet *net.IPNet) error {
 	if subnet == nil {
 		subnet, _ = parseNodeHostSubnet(node)
 	}
-	mode := node.Annotations[OvnNodeGatewayMode]
+	mode := l3GatewayConfig[OvnNodeGatewayMode]
 	if mode == string(config.GatewayModeDisabled) {
 		if err := util.GatewayCleanup(node.Name, subnet); err != nil {
 			return fmt.Errorf("error cleaning up gateway for node %s: %v", node.Name, err)
 		}
 	} else if subnet != nil {
-		if err := oc.syncGatewayLogicalNetwork(node, mode, subnet.String()); err != nil {
+		if err := oc.syncGatewayLogicalNetwork(node, mode, l3GatewayConfig, subnet.String()); err != nil {
 			return fmt.Errorf("error creating gateway for node %s: %v", node.Name, err)
 		}
 	}
@@ -511,7 +511,8 @@ func (oc *Controller) WatchNodes() error {
 				logrus.Errorf("error creating Node Management Port for node %s: %v", node.Name, err)
 			}
 
-			if err := oc.syncNodeGateway(node, hostSubnet); err != nil {
+			l3GatewayConfig, _ := UnmarshalNodeL3GatewayAnnotation(node)
+			if err := oc.syncNodeGateway(node, l3GatewayConfig, hostSubnet); err != nil {
 				gatewaysFailed[node.Name] = true
 				logrus.Errorf(err.Error())
 			}
@@ -519,6 +520,8 @@ func (oc *Controller) WatchNodes() error {
 		UpdateFunc: func(old, new interface{}) {
 			oldNode := old.(*kapi.Node)
 			node := new.(*kapi.Node)
+			oldL3GatewayConfig, _ := UnmarshalNodeL3GatewayAnnotation(oldNode)
+			l3GatewayConfig, _ := UnmarshalNodeL3GatewayAnnotation(node)
 			oldMacAddress := oldNode.Annotations[OvnNodeManagementPortMacAddress]
 			macAddress := node.Annotations[OvnNodeManagementPortMacAddress]
 			logrus.Debugf("Updated event for Node %q", node.Name)
@@ -533,8 +536,8 @@ func (oc *Controller) WatchNodes() error {
 				oc.clearInitialNodeNetworkUnavailableCondition(node)
 			}
 
-			if gatewaysFailed[node.Name] || gatewayChanged(oldNode, node) {
-				if err := oc.syncNodeGateway(node, nil); err != nil {
+			if gatewaysFailed[node.Name] || gatewayChanged(oldL3GatewayConfig, l3GatewayConfig) {
+				if err := oc.syncNodeGateway(node, l3GatewayConfig, nil); err != nil {
 					gatewaysFailed[node.Name] = true
 					logrus.Errorf(err.Error())
 				} else {
@@ -584,29 +587,29 @@ func (oc *Controller) GetServiceVIPToName(vip string, protocol kapi.Protocol) (t
 }
 
 // gatewayChanged() compares old annotations to new and returns true if something has changed.
-func gatewayChanged(oldNode, newNode *kapi.Node) bool {
+func gatewayChanged(oldL3GatewayConfig, newL3GatewayConfig map[string]string) bool {
 
-	if newNode.Annotations[OvnNodeGatewayMode] != oldNode.Annotations[OvnNodeGatewayMode] {
+	if newL3GatewayConfig[OvnNodeGatewayMode] != oldL3GatewayConfig[OvnNodeGatewayMode] {
 		return true
 	}
 
-	if newNode.Annotations[OvnNodeGatewayVlanID] != oldNode.Annotations[OvnNodeGatewayVlanID] {
+	if newL3GatewayConfig[OvnNodeGatewayVlanID] != oldL3GatewayConfig[OvnNodeGatewayVlanID] {
 		return true
 	}
 
-	if newNode.Annotations[OvnNodeGatewayIfaceID] != oldNode.Annotations[OvnNodeGatewayIfaceID] {
+	if newL3GatewayConfig[OvnNodeGatewayIfaceID] != oldL3GatewayConfig[OvnNodeGatewayIfaceID] {
 		return true
 	}
 
-	if newNode.Annotations[OvnNodeGatewayMacAddress] != oldNode.Annotations[OvnNodeGatewayMacAddress] {
+	if newL3GatewayConfig[OvnNodeGatewayMacAddress] != oldL3GatewayConfig[OvnNodeGatewayMacAddress] {
 		return true
 	}
 
-	if newNode.Annotations[OvnNodeGatewayIP] != oldNode.Annotations[OvnNodeGatewayIP] {
+	if newL3GatewayConfig[OvnNodeGatewayIP] != oldL3GatewayConfig[OvnNodeGatewayIP] {
 		return true
 	}
 
-	if newNode.Annotations[OvnNodeGatewayNextHop] != oldNode.Annotations[OvnNodeGatewayNextHop] {
+	if newL3GatewayConfig[OvnNodeGatewayNextHop] != oldL3GatewayConfig[OvnNodeGatewayNextHop] {
 		return true
 	}
 

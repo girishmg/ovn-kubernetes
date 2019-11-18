@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
@@ -139,12 +141,12 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 
 	type readyFunc func(string, string) (bool, error)
 	var readyFuncs []readyFunc
-	var nodeAnnotations map[string]string
+	var nodeAnnotations, gatewayAnnotations map[string]string
 	var postReady postReadyFn
 
 	// If gateway is enabled, get gateway annotations
 	if config.Gateway.Mode != config.GatewayModeDisabled {
-		nodeAnnotations, postReady, err = cluster.initGateway(node.Name, subnet.String())
+		gatewayAnnotations, postReady, err = cluster.initGateway(node.Name, subnet.String())
 		if err != nil {
 			return err
 		}
@@ -152,24 +154,26 @@ func (cluster *OvnClusterController) StartClusterNode(name string) error {
 	}
 
 	// Get management port annotations
-	mgmtPortAnnotations, err := CreateManagementPort(node.Name, subnet, clusterSubnets)
+	nodeAnnotations, err = CreateManagementPort(node.Name, subnet, clusterSubnets)
 	if err != nil {
 		return err
 	}
 
 	readyFuncs = append(readyFuncs, ManagementPortReady)
 
-	// Combine mgmtPortAnnotations with any existing gwyAnnotations
-	for k, v := range mgmtPortAnnotations {
-		nodeAnnotations[k] = v
-	}
-
 	wg.Add(len(readyFuncs))
 
-	// Set node annotations
+	// Marshall node l3 gateway config annotations
+	bytes, err := json.Marshal(map[string]map[string]string{"default": gatewayAnnotations})
+	if err != nil {
+		return fmt.Errorf("Failed marshaling node %s annotation: %v", node.Name, gatewayAnnotations)
+	}
+
+	// Combine and set gatewayAnnotations with the management port annotations
+	nodeAnnotations[ovn.OvnNodeL3GatewayConfig] = string(bytes)
 	err = cluster.Kube.SetAnnotationsOnNode(node, nodeAnnotations)
 	if err != nil {
-		return fmt.Errorf("Failed to set node %s annotation: %v", node.Name, nodeAnnotations)
+		return fmt.Errorf("Failed to set node %s's annotation: %v", node.Name, nodeAnnotations)
 	}
 
 	portName := "k8s-" + node.Name

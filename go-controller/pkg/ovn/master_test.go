@@ -1,6 +1,7 @@
 package ovn
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 
@@ -427,6 +428,7 @@ subnet=%s
 					},
 				},
 			}
+
 			fakeClient := fake.NewSimpleClientset(&v1.NodeList{
 				Items: []v1.Node{masterNode},
 			})
@@ -516,21 +518,28 @@ var _ = Describe("Gateway Init Operations", func() {
 				Annotations: map[string]string{
 					OvnNodeManagementPortMacAddress: brLocalnetMAC,
 					OvnHostSubnet:                   nodeSubnet,
-					OvnNodeGatewayMode:              string(config.GatewayModeLocal),
-					OvnNodeGatewayVlanID:            string(config.Gateway.VLANID),
-					OvnNodeGatewayIfaceID:           ifaceID,
-					OvnNodeGatewayMacAddress:        brLocalnetMAC,
-					OvnNodeGatewayIP:                localnetGatewayIP,
-					OvnNodeGatewayNextHop:           localnetGatewayNextHop,
 				},
 			}}
+
+			l3GatewayConfig := map[string]string{
+				OvnNodeGatewayMode:       string(config.GatewayModeLocal),
+				OvnNodeGatewayVlanID:     string(config.Gateway.VLANID),
+				OvnNodeGatewayIfaceID:    ifaceID,
+				OvnNodeGatewayMacAddress: brLocalnetMAC,
+				OvnNodeGatewayIP:         localnetGatewayIP,
+				OvnNodeGatewayNextHop:    localnetGatewayNextHop,
+			}
+
+			bytes, err := json.Marshal(map[string]map[string]string{"default": l3GatewayConfig})
+			Expect(err).NotTo(HaveOccurred())
+			testNode.Annotations[OvnNodeL3GatewayConfig] = string(bytes)
 
 			fakeClient := fake.NewSimpleClientset(&v1.NodeList{
 				Items: []v1.Node{testNode},
 			})
 
 			fexec := ovntest.NewFakeExec()
-			err := util.SetExec(fexec)
+			err = util.SetExec(fexec)
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = config.InitConfig(ctx, fexec, nil)
@@ -706,7 +715,7 @@ GR_openshift-master-node chassis=6a47b33b-89d3-4d65-ac31-b19b549326c7 lb_force_s
 
 			_, subnet, err := net.ParseCIDR(nodeSubnet)
 			Expect(err).NotTo(HaveOccurred())
-			err = clusterController.syncGatewayLogicalNetwork(&testNode, string(config.GatewayModeLocal), subnet.String())
+			err = clusterController.syncGatewayLogicalNetwork(&testNode, string(config.GatewayModeLocal), l3GatewayConfig, subnet.String())
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fexec.CalledMatchesExpected()).To(BeTrue())
@@ -759,21 +768,27 @@ GR_openshift-master-node chassis=6a47b33b-89d3-4d65-ac31-b19b549326c7 lb_force_s
 				Annotations: map[string]string{
 					OvnNodeManagementPortMacAddress: brLocalnetMAC,
 					OvnHostSubnet:                   nodeSubnet,
-					OvnNodeGatewayMode:              string(config.GatewayModeShared),
-					OvnNodeGatewayVlanID:            "1024",
-					OvnNodeGatewayIfaceID:           ifaceID,
-					OvnNodeGatewayMacAddress:        brLocalnetMAC,
-					OvnNodeGatewayIP:                localnetGatewayIP,
-					OvnNodeGatewayNextHop:           localnetGatewayNextHop,
 				},
 			}}
+
+			l3GatewayConfig := map[string]string{
+				OvnNodeGatewayMode:       string(config.GatewayModeShared),
+				OvnNodeGatewayVlanID:     "1024",
+				OvnNodeGatewayIfaceID:    ifaceID,
+				OvnNodeGatewayMacAddress: brLocalnetMAC,
+				OvnNodeGatewayIP:         localnetGatewayIP,
+				OvnNodeGatewayNextHop:    localnetGatewayNextHop,
+			}
+			bytes, err := json.Marshal(map[string]map[string]string{"default": l3GatewayConfig})
+			Expect(err).NotTo(HaveOccurred())
+			testNode.Annotations[OvnNodeL3GatewayConfig] = string(bytes)
 
 			fakeClient := fake.NewSimpleClientset(&v1.NodeList{
 				Items: []v1.Node{testNode},
 			})
 
 			fexec := ovntest.NewFakeExec()
-			err := util.SetExec(fexec)
+			err = util.SetExec(fexec)
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = config.InitConfig(ctx, fexec, nil)
@@ -955,7 +970,7 @@ GR_openshift-master-node chassis=6a47b33b-89d3-4d65-ac31-b19b549326c7 lb_force_s
 
 			_, subnet, err := net.ParseCIDR(nodeSubnet)
 			Expect(err).NotTo(HaveOccurred())
-			err = clusterController.syncGatewayLogicalNetwork(&testNode, string(config.GatewayModeLocal), subnet.String())
+			err = clusterController.syncGatewayLogicalNetwork(&testNode, string(config.GatewayModeLocal), l3GatewayConfig, subnet.String())
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(fexec.CalledMatchesExpected()).To(BeTrue())
