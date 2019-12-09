@@ -14,7 +14,7 @@
 #
 # So this file will change over time.
 
-FROM centos:7
+FROM centos:8
 
 USER root
 
@@ -22,10 +22,10 @@ ENV PYTHONDONTWRITEBYTECODE yes
 
 COPY kubernetes.repo /etc/yum.repos.d/kubernetes.repo
 RUN INSTALL_PKGS=" \
-	PyYAML bind-utils procps-ng openssl numactl-libs firewalld-filesystem \
+	bind-utils procps-ng openssl numactl-libs firewalld-filesystem \
 	libpcap kubectl \
 	iproute strace socat \
-	unbound-libs \
+	unbound-libs python2 \
         " && \
 	yum install -y --setopt=tsflags=nodocs --setopt=skip_missing_names_on_install=False $INSTALL_PKGS
 
@@ -41,8 +41,16 @@ ARG dpdkRpmUrl=http://cbs.centos.org/kojifiles/packages/dpdk/${dpdkVer}/${dpdkSu
 
 RUN if [ "$(uname -m)" = "aarch64" ]; then dpdkRpmUrl=https://rpmfind.net/linux/fedora/linux/updates/28/Everything/aarch64/Packages/d/dpdk-17.11.2-1.fc28.aarch64.rpm; fi && rpm -i ${dpdkRpmUrl}
 
-RUN curl -s https://baefece184f8010e74aa58f88db3a6660f8e1eb2c21ac69e:@packages.nvidia.com/install/repositories/sdn/nv-ovs-2-11-2/script.rpm.sh | bash
-RUN yum install -y openvswitch openvswitch-ovn-common openvswitch-ovn-central openvswitch-ovn-host openvswitch-ovn-vtep openvswitch-devel
+#we need dist=7 since package cloud does not support centos8 yet
+RUN curl -s https://dde5dee3fddef955ebe8f8b548882e19180dfe1d9386e46c:@packages.nvidia.com/install/repositories/sdn/centos8-2-12-0-1/script.rpm.sh | os=el dist=7  bash
+
+RUN yumdownloader openvswitch-ovn-central openvswitch-ovn-host openvswitch-devel ovn openvswitch
+RUN rpm -ivh --nodeps openvswitch-2.12.0-1.x86_64.rpm ovn-2.12.0-1.el8.x86_64.rpm ovn-host-2.12.0-1.el8.x86_64.rpm ovn-central-2.12.0-1.el8.x86_64.rpm openvswitch-devel-2.12.0-1.x86_64.rpm 
+
+RUN yum install -y openvswitch-ovn-central openvswitch-ovn-host openvswitch-devel
+
+
+
 RUN rm -rf /var/cache/yum
 
 RUN mkdir -p /var/run/openvswitch
