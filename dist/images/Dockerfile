@@ -47,10 +47,6 @@ RUN curl -s https://dde5dee3fddef955ebe8f8b548882e19180dfe1d9386e46c:@packages.n
 RUN yumdownloader openvswitch-ovn-central openvswitch-ovn-host openvswitch-devel ovn openvswitch
 RUN rpm -ivh --nodeps openvswitch-2.12.0-1.x86_64.rpm ovn-2.12.0-1.el8.x86_64.rpm ovn-host-2.12.0-1.el8.x86_64.rpm ovn-central-2.12.0-1.el8.x86_64.rpm openvswitch-devel-2.12.0-1.x86_64.rpm 
 
-RUN yum install -y openvswitch-ovn-central openvswitch-ovn-host openvswitch-devel
-
-
-
 RUN rm -rf /var/cache/yum
 
 RUN mkdir -p /var/run/openvswitch
