@@ -723,6 +723,7 @@ ovn-master () {
 
 # ovn-controller - all nodes
 ovn-controller () {
+  trap "ovs-appctl -t ovn-controller exit ; exit 0" TERM
   check_ovn_daemonset_version "3"
   rm -f ${OVN_RUNDIR}/ovn-controller.pid
 
