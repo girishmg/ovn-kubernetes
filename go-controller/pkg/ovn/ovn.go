@@ -557,6 +557,16 @@ func (oc *Controller) WatchNodes() error {
 			if err != nil {
 				logrus.Error(err)
 			}
+			// remove the chassis from OVN SB DB
+			systemID, _ := parseNodeChassisID(node)
+			if systemID != "" {
+				_, _, err = util.RunOVNSbctl("--if-exist", "chassis-del", systemID)
+				if err != nil {
+					logrus.Errorf("error deleting chassis for node %s with systemID %s: %v",
+						node.Name, systemID, err)
+				}
+			}
+
 			oc.lsMutex.Lock()
 			delete(oc.logicalSwitchCache, node.Name)
 			oc.lsMutex.Unlock()
