@@ -45,6 +45,8 @@ const (
 	OvnNodeGatewayIP = "ip-address"
 	// OvnNodeGatewayNextHop is the Next Hop in the l3 gateway annotation
 	OvnNodeGatewayNextHop = "next-hop"
+	// OvnNodeLocalGatewayMacAddress represents the MAC addres of the br-local bridge
+	OvnNodeLocalGatewayMacAddress = "local-mac-address"
 	// OvnNodePortEnable in the l3 gateway annotation captures whether load balancer needs to
 	// be created or not
 	OvnNodePortEnable = "node-port-enable"
@@ -355,6 +357,20 @@ func parseGatewayIfaceID(l3GatewayConfig map[string]string) (string, error) {
 	return ifaceID, nil
 }
 
+func parseLocalGatewayMacAddress(l3GatewayConfig map[string]string) (string, error) {
+	gatewayMacAddress, ok := l3GatewayConfig[OvnNodeLocalGatewayMacAddress]
+	if !ok {
+		return "", fmt.Errorf("%s annotation not found", OvnNodeLocalGatewayMacAddress)
+	}
+
+	_, err := net.ParseMAC(gatewayMacAddress)
+	if err != nil {
+		return "", fmt.Errorf("Error %v in parsing node gateway macAddress %v", err, gatewayMacAddress)
+	}
+
+	return gatewayMacAddress, nil
+}
+
 func parseGatewayMacAddress(l3GatewayConfig map[string]string) (string, error) {
 	gatewayMacAddress, ok := l3GatewayConfig[OvnNodeGatewayMacAddress]
 	if !ok {
@@ -465,9 +481,13 @@ func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig
 	}
 
 	if mode == string(config.GatewayModeShared) {
-		// Add static routes to OVN Cluster Router to enable pods on this Node to
-		// reach the host IP
-		err = addStaticRouteToHost(node, ipAddress)
+		localOnlyGwMacAddress, err := parseLocalGatewayMacAddress(l3GatewayConfig)
+		if err != nil {
+			return err
+		}
+		localOnlyIfaceID := fmt.Sprintf("br-local_%s", node.Name)
+		err = util.LocalGatewayInit(clusterSubnets, joinSubnetStr, systemID, node.Name, ipAddress, localOnlyIfaceID,
+			util.LocalnetGatewayIP(), localOnlyGwMacAddress, util.LocalnetGatewayNextHop())
 		if err != nil {
 			return err
 		}
@@ -478,25 +498,6 @@ func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig
 	}
 
 	return err
-}
-
-func addStaticRouteToHost(node *kapi.Node, nicIP string) error {
-	k8sClusterRouter := util.GetK8sClusterRouter()
-	subnet, err := parseNodeHostSubnet(node)
-	if err != nil {
-		return fmt.Errorf("failed to get interface IP address for %s (%v)",
-			util.GetK8sMgmtIntfName(node.Name), err)
-	}
-	_, secondIP := util.GetNodeWellKnownAddresses(subnet)
-	prefix := strings.Split(nicIP, "/")[0] + "/32"
-	nexthop := strings.Split(secondIP.String(), "/")[0]
-	_, stderr, err := util.RunOVNNbctl("--may-exist", "lr-route-add", k8sClusterRouter, prefix, nexthop)
-	if err != nil {
-		return fmt.Errorf("failed to add static route '%s via %s' for host %q on %s "+
-			"stderr: %q, error: %v", nicIP, secondIP, node.Name, k8sClusterRouter, stderr, err)
-	}
-
-	return nil
 }
 
 func parseNodeHostSubnet(node *kapi.Node) (*net.IPNet, error) {
@@ -768,7 +769,7 @@ func (oc *Controller) deleteNode(nodeName string, nodeSubnet, joinSubnet *net.IP
 		klog.Errorf("Error deleting node %s logical network: %v", nodeName, err)
 	}
 
-	if err := util.GatewayCleanup(nodeName, nodeSubnet); err != nil {
+	if err := util.GatewayCleanup(nodeName); err != nil {
 		return fmt.Errorf("Failed to clean up node %s gateway: (%v)", nodeName, err)
 	}
 

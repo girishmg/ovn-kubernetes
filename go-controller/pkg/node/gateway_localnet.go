@@ -20,43 +20,13 @@ import (
 )
 
 const (
-	v4localnetGatewayIP            = "169.254.33.2/24"
-	v4localnetGatewayNextHop       = "169.254.33.1"
-	v4localnetGatewayNextHopSubnet = "169.254.33.1/24"
-	v6localnetGatewayIP            = "fd99::2/64"
-	v6localnetGatewayNextHop       = "fd99::1"
-	v6localnetGatewayNextHopSubnet = "fd99::1/64"
-	// fixed MAC address for the br-nexthop interface. the last 4 hex bytes
-	// translates to the br-nexthop's IP address
-	localnetGatewayNextHopMac = "00:00:a9:fe:21:01"
-	iptableNodePortChain      = "OVN-KUBE-NODEPORT"
+	iptableNodePortChain = "OVN-KUBE-NODEPORT"
 )
 
 type iptRule struct {
 	table string
 	chain string
 	args  []string
-}
-
-func localnetGatewayIP() string {
-	if config.IPv6Mode {
-		return v6localnetGatewayIP
-	}
-	return v4localnetGatewayIP
-}
-
-func localnetGatewayNextHop() string {
-	if config.IPv6Mode {
-		return v6localnetGatewayNextHop
-	}
-	return v4localnetGatewayNextHop
-}
-
-func localnetGatewayNextHopSubnet() string {
-	if config.IPv6Mode {
-		return v6localnetGatewayNextHopSubnet
-	}
-	return v4localnetGatewayNextHopSubnet
 }
 
 func ensureChain(ipt util.IPTablesHelper, table, chain string) error {
@@ -151,7 +121,8 @@ func initLocalnetGateway(nodeName string,
 			", stderr:%s (%v)", localnetBridgeName, stderr, err)
 	}
 
-	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, localnetBridgeName, localnetBridgeName, true)
+	ifaceID, macAddress, err := bridgedGatewayNodeSetup(nodeName, localnetBridgeName, localnetBridgeName,
+		util.PhysicalNetworkName, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up shared interface gateway: %v", err)
 	}
@@ -167,7 +138,7 @@ func initLocalnetGateway(nodeName string,
 		"--may-exist", "add-port", localnetBridgeName, localnetBridgeNextHop,
 		"--", "set", "interface", localnetBridgeNextHop, "type=internal",
 		"mtu_request="+fmt.Sprintf("%d", config.Default.MTU),
-		fmt.Sprintf("mac=%s", strings.ReplaceAll(localnetGatewayNextHopMac, ":", "\\:")))
+		fmt.Sprintf("mac=%s", strings.ReplaceAll(util.LocalnetGatewayNextHopMac, ":", "\\:")))
 	if err != nil {
 		return nil, fmt.Errorf("Failed to create localnet bridge next hop %s"+
 			", stderr:%s (%v)", localnetBridgeNextHop, stderr, err)
@@ -186,7 +157,7 @@ func initLocalnetGateway(nodeName string,
 
 	// Set localnetBridgeNextHop with an IP address.
 	_, _, err = util.RunIP("addr", "add",
-		localnetGatewayNextHopSubnet(),
+		util.LocalnetGatewayNextHopSubnet(),
 		"dev", localnetBridgeNextHop)
 	if err != nil {
 		return nil, fmt.Errorf("failed to assign ip address to %s (%v)",
@@ -198,8 +169,8 @@ func initLocalnetGateway(nodeName string,
 		ovn.OvnNodeGatewayVlanID:     fmt.Sprintf("%d", config.Gateway.VLANID),
 		ovn.OvnNodeGatewayIfaceID:    ifaceID,
 		ovn.OvnNodeGatewayMacAddress: macAddress,
-		ovn.OvnNodeGatewayIP:         localnetGatewayIP(),
-		ovn.OvnNodeGatewayNextHop:    localnetGatewayNextHop(),
+		ovn.OvnNodeGatewayIP:         util.LocalnetGatewayIP(),
+		ovn.OvnNodeGatewayNextHop:    util.LocalnetGatewayNextHop(),
 		ovn.OvnNodePortEnable:        fmt.Sprintf("%t", config.Gateway.NodeportEnable),
 	}
 	annotations := map[string]map[string]string{
@@ -218,7 +189,7 @@ func initLocalnetGateway(nodeName string,
 		}
 	}
 
-	err = localnetGatewayNAT(ipt, localnetBridgeNextHop, localnetGatewayIP())
+	err = localnetGatewayNAT(ipt, localnetBridgeNextHop, util.LocalnetGatewayIP())
 	if err != nil {
 		return nil, fmt.Errorf("Failed to add NAT rules for localnet gateway (%v)",
 			err)
@@ -244,7 +215,7 @@ func localnetIptRules(svc *kapi.Service) []iptRule {
 			table: "nat",
 			chain: iptableNodePortChain,
 			args: []string{"-p", string(protocol), "--dport", nodePort, "-j", "DNAT", "--to-destination",
-				net.JoinHostPort(strings.Split(localnetGatewayIP(), "/")[0], nodePort)},
+				net.JoinHostPort(strings.Split(util.LocalnetGatewayIP(), "/")[0], nodePort)},
 		})
 		rules = append(rules, iptRule{
 			table: "filter",
@@ -360,17 +331,25 @@ func localnetNodePortWatcher(ipt util.IPTablesHelper, wf *factory.WatchFactory) 
 }
 
 // cleanupLocalnetGateway cleans up Localnet Gateway
-func cleanupLocalnetGateway() error {
+func cleanupLocalnetGateway(physnet string) error {
 	// get bridgeName from ovn-bridge-mappings.
 	stdout, stderr, err := util.RunOVSVsctl("--if-exists", "get", "Open_vSwitch", ".",
 		"external_ids:ovn-bridge-mappings")
 	if err != nil {
 		return fmt.Errorf("Failed to get ovn-bridge-mappings stderr:%s (%v)", stderr, err)
 	}
-	bridgeName := strings.Split(stdout, ":")[1]
-	_, stderr, err = util.RunOVSVsctl("--", "--if-exists", "del-br", bridgeName)
-	if err != nil {
-		return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
+	bridgeMappings := strings.Split(stdout, ",")
+	for _, bridgeMapping := range bridgeMappings {
+		m := strings.Split(bridgeMapping, ":")
+		if physnet == m[0] {
+			bridgeName := m[1]
+			_, stderr, err = util.RunOVSVsctl("--", "--if-exists", "del-br", bridgeName)
+			if err != nil {
+				return fmt.Errorf("Failed to ovs-vsctl del-br %s stderr:%s (%v)", bridgeName, stderr, err)
+			}
+			break
+		}
 	}
-	return err
+
+	return nil
 }

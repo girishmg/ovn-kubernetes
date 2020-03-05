@@ -44,13 +44,43 @@ func addNodeportLBs(fexec *ovntest.FakeExec, nodeName, tcpLBUUID, udpLBUUID stri
 		Output: udpLBUUID,
 	})
 	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 set logical_router GR_node1 load_balancer=" + tcpLBUUID,
-		"ovn-nbctl --timeout=15 add logical_router GR_node1 load_balancer " + udpLBUUID,
+		"ovn-nbctl --timeout=15 set logical_router GR_" + nodeName + " load_balancer=" + tcpLBUUID,
+		"ovn-nbctl --timeout=15 add logical_router GR_" + nodeName + " load_balancer " + udpLBUUID,
+	})
+}
+
+func initLocalOnlyGatewayTest(fexec *ovntest.FakeExec, nodeName, brLocalnetMAC, mtu string) {
+	fexec.AddFakeCmdsNoOutputNoError([]string{
+		"ovs-vsctl --timeout=15 --may-exist add-br br-local",
+	})
+	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
+		Cmd:    "ovs-vsctl --timeout=15 --if-exists get interface br-local mac_in_use",
+		Output: brLocalnetMAC,
+	})
+	fexec.AddFakeCmdsNoOutputNoError([]string{
+		"ovs-vsctl --timeout=15 set bridge br-local other-config:hwaddr=" + brLocalnetMAC,
+	})
+	fexec.AddFakeCmd(&ovntest.ExpectedCmd{
+		Cmd:    "ovs-vsctl --timeout=15 --if-exists get Open_vSwitch . external_ids:ovn-bridge-mappings",
+		Output: util.PhysicalNetworkName + ":breth0",
+	})
+	fexec.AddFakeCmdsNoOutputNoError([]string{
+		"ovs-vsctl --timeout=15 set Open_vSwitch . external_ids:ovn-bridge-mappings=" + util.PhysicalNetworkName + ":breth0" + "," + util.LocalNetworkName + ":br-local",
+	})
+	fexec.AddFakeCmdsNoOutputNoError([]string{
+		"ip link set br-local up",
+		"ovs-vsctl --timeout=15 --may-exist add-port br-local br-nexthop -- set interface br-nexthop type=internal mtu_request=" + mtu + " mac=00\\:00\\:a9\\:fe\\:21\\:01",
+		"ip link set br-nexthop up",
+		"ip addr flush dev br-nexthop",
+		"ip addr add 169.254.33.1/24 dev br-nexthop",
+		"ip neigh delete 169.254.33.2 dev br-nexthop",
+		"ip neigh add 169.254.33.2 dev br-nexthop lladdr " + brLocalnetMAC,
 	})
 }
 
 func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 	eth0Name, eth0MAC, eth0IP, eth0GWIP, eth0CIDR string, gatewayVLANID uint) {
+	const mtu string = "1234"
 	const clusterCIDR string = "10.1.0.0/16"
 	app.Action = func(ctx *cli.Context) error {
 		const (
@@ -64,8 +94,7 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 			udpLBUUID         string = "12832f14-eb0f-44d4-b8db-4cccbc73c792"
 			nodeSubnet        string = "10.1.1.0/24"
 			gwRouter          string = "GR_" + nodeName
-			mgtPortName       string = "k8s-" + nodeName
-			mgtPortIP         string = "10.1.1.2"
+			brLocalnetMAC     string = "11:22:33:44:55:66"
 		)
 
 		fexec := ovntest.NewFakeExec()
@@ -110,14 +139,23 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 		})
 		fexec.AddFakeCmdsNoOutputNoError([]string{
 			"ovs-vsctl --timeout=15 set bridge breth0 other-config:hwaddr=" + eth0MAC,
+		})
+		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
+			Cmd:    "ovs-vsctl --timeout=15 --if-exists get Open_vSwitch . external_ids:ovn-bridge-mappings",
+			Output: "",
+		})
+		fexec.AddFakeCmdsNoOutputNoError([]string{
 			"ovs-vsctl --timeout=15 set Open_vSwitch . external_ids:ovn-bridge-mappings=" + util.PhysicalNetworkName + ":breth0",
 		})
+
+		initLocalOnlyGatewayTest(fexec, nodeName, brLocalnetMAC, mtu)
+
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
 			Cmd:    "ovs-ofctl --no-stats --no-names dump-flows br-int table=41,ip,nw_src=" + clusterCIDR,
 			Output: ` cookie=0x770ac8a6, table=41, priority=17,ip,metadata=0x3,nw_src=` + clusterCIDR + ` actions=ct(commit,table=42,zone=NXM_NX_REG12[0..15],nat(src=` + eth0IP + `))`,
 		})
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-			Cmd:    "ovs-vsctl --timeout=15 wait-until Interface patch-breth0_node1-to-br-int ofport>0 -- get Interface patch-breth0_node1-to-br-int ofport",
+			Cmd:    "ovs-vsctl --timeout=15 wait-until Interface patch-breth0_" + nodeName + "-to-br-int ofport>0 -- get Interface patch-breth0_" + nodeName + "-to-br-int ofport",
 			Output: "5",
 		})
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
@@ -133,7 +171,7 @@ func shareGatewayInterfaceTest(app *cli.App, testNS ns.NetNS,
 		})
 		// nodePortWatcher()
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-			Cmd:    "ovs-vsctl --timeout=15 --if-exists get interface patch-breth0_node1-to-br-int ofport",
+			Cmd:    "ovs-vsctl --timeout=15 --if-exists get interface patch-breth0_" + nodeName + "-to-br-int ofport",
 			Output: "5",
 		})
 		fexec.AddFakeCmd(&ovntest.ExpectedCmd{
@@ -159,11 +197,12 @@ cookie=0x0, duration=8366.597s, table=1, n_packets=10641, n_bytes=10370087, prio
 		Expect(err).NotTo(HaveOccurred())
 
 		l3GatewayConfig := map[string]string{
-			ovn.OvnNodeGatewayMode:       string(config.Gateway.Mode),
-			ovn.OvnNodeGatewayVlanID:     string(gatewayVLANID),
-			ovn.OvnNodeGatewayIfaceID:    gwRouter,
-			ovn.OvnNodeGatewayMacAddress: lrpMAC,
-			ovn.OvnNodeGatewayIP:         lrpIP,
+			ovn.OvnNodeGatewayMode:            string(config.Gateway.Mode),
+			ovn.OvnNodeGatewayVlanID:          string(gatewayVLANID),
+			ovn.OvnNodeGatewayIfaceID:         gwRouter,
+			ovn.OvnNodeGatewayMacAddress:      lrpMAC,
+			ovn.OvnNodeGatewayIP:              lrpIP,
+			ovn.OvnNodeLocalGatewayMacAddress: brLocalnetMAC,
 			//ovn.OvnNodeGatewayNextHop:    localnetGatewayNextHop,
 		}
 		byteArr, err := json.Marshal(map[string]map[string]string{ovn.OvnDefaultNetworkGateway: l3GatewayConfig})
@@ -242,6 +281,7 @@ cookie=0x0, duration=8366.597s, table=1, n_packets=10641, n_bytes=10370087, prio
 		"--gateway-interface=" + eth0Name,
 		"--nodeport",
 		"--gateway-vlanid=" + fmt.Sprintf("%d", gatewayVLANID),
+		"--mtu=" + mtu,
 	})
 	Expect(err).NotTo(HaveOccurred())
 }
@@ -295,6 +335,12 @@ var _ = Describe("Gateway Init Operations", func() {
 			})
 			fexec.AddFakeCmdsNoOutputNoError([]string{
 				"ovs-vsctl --timeout=15 set bridge br-local other-config:hwaddr=" + brLocalnetMAC,
+			})
+			fexec.AddFakeCmd(&ovntest.ExpectedCmd{
+				Cmd:    "ovs-vsctl --timeout=15 --if-exists get Open_vSwitch . external_ids:ovn-bridge-mappings",
+				Output: "",
+			})
+			fexec.AddFakeCmdsNoOutputNoError([]string{
 				"ovs-vsctl --timeout=15 set Open_vSwitch . external_ids:ovn-bridge-mappings=" + util.PhysicalNetworkName + ":br-local",
 				"ip link set br-local up",
 				"ovs-vsctl --timeout=15 --may-exist add-port br-local br-nexthop -- set interface br-nexthop type=internal mtu_request=" + mtu + " mac=00\\:00\\:a9\\:fe\\:21\\:01",
