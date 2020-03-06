@@ -34,8 +34,8 @@ spec:
       serviceAccountName: ovn
       hostNetwork: true
       hostPID: true
+      priorityClassName: "system-node-critical"
       containers:
-
       # ovsdb-server and ovs-switchd daemons
       - name: ovs-daemons
         image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
