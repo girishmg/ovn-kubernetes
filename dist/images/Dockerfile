@@ -41,11 +41,11 @@ ARG dpdkRpmUrl=http://cbs.centos.org/kojifiles/packages/dpdk/${dpdkVer}/${dpdkSu
 
 RUN if [ "$(uname -m)" = "aarch64" ]; then dpdkRpmUrl=https://rpmfind.net/linux/fedora/linux/updates/28/Everything/aarch64/Packages/d/dpdk-17.11.2-1.fc28.aarch64.rpm; fi && rpm -i ${dpdkRpmUrl}
 
-#we need dist=7 since package cloud does not support centos8 yet
-RUN curl -s https://dde5dee3fddef955ebe8f8b548882e19180dfe1d9386e46c:@packages.nvidia.com/install/repositories/sdn/centos8-2-12-0-1/script.rpm.sh | os=el dist=7  bash
+RUN curl -s https://6bae5606566b26d357c13137b70f0398fee21dee42e9ecdf:@packages.nvidia.com/install/repositories/sdn/nv-ovs-2-13-cicd/script.rpm.sh | bash
+RUN curl -s https://47bc9e978f9d6e3f9fd04e6d69613517f50f8a1b78bdbd31:@packages.nvidia.com/install/repositories/sdn/nv-ovn-20-03-cicd/script.rpm.sh | bash
 
-RUN yumdownloader openvswitch-ovn-central openvswitch-ovn-host openvswitch-devel ovn openvswitch
-RUN rpm -ivh --nodeps openvswitch-2.12.0-1.x86_64.rpm ovn-2.12.0-1.el8.x86_64.rpm ovn-host-2.12.0-1.el8.x86_64.rpm ovn-central-2.12.0-1.el8.x86_64.rpm openvswitch-devel-2.12.0-1.x86_64.rpm 
+RUN yum install -y epel-release
+RUN yum install -y openvswitch ovn ovn-host ovn-central openvswitch-devel
 
 RUN rm -rf /var/cache/yum
 
