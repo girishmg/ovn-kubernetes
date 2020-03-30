@@ -33,24 +33,34 @@ func gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*n
 	var gwLRPIPs, drLRPIPs []net.IP
 	var gwLRPAddrs, drLRPAddrs []string
 
+	joinSwitch := joinSwitchPrefix + nodeName
+	cmdArgs := []string{"--", "--may-exist", "ls-add", joinSwitch}
 	for _, joinSubnet := range joinSubnets {
 		prefixLen, _ := joinSubnet.Mask.Size()
 		gwLRPIP := util.NextIP(joinSubnet.IP)
+
 		gwLRPIPs = append(gwLRPIPs, gwLRPIP)
 		gwLRPAddrs = append(gwLRPAddrs, fmt.Sprintf("%s/%d", gwLRPIP.String(), prefixLen))
 		drLRPIP := util.NextIP(gwLRPIP)
 		drLRPIPs = append(drLRPIPs, drLRPIP)
 		drLRPAddrs = append(drLRPAddrs, fmt.Sprintf("%s/%d", drLRPIP.String(), prefixLen))
 
-		if gwLRPMAC == nil || !utilnet.IsIPv6(gwLRPIP) {
+		isIPv6 := utilnet.IsIPv6(gwLRPIP)
+		if isIPv6 {
+			cmdArgs = append(cmdArgs, []string{"--", "set", "logical_switch", joinSwitch,
+				"other-config:ipv6_prefix=" + joinSubnet.IP.String()}...)
+		} else {
+			cmdArgs = append(cmdArgs, []string{"--", "set", "logical_switch", joinSwitch,
+				"other-config:subnet=" + joinSubnet.String()}...)
+		}
+		if gwLRPMAC == nil || !isIPv6 {
 			gwLRPMAC = util.IPAddrToHWAddr(gwLRPIP)
 			drLRPMAC = util.IPAddrToHWAddr(drLRPIP)
 		}
 	}
 
-	joinSwitch := joinSwitchPrefix + nodeName
 	// create the per-node join switch
-	stdout, stderr, err = util.RunOVNNbctl("--", "--may-exist", "ls-add", joinSwitch)
+	stdout, stderr, err = util.RunOVNNbctl(cmdArgs...)
 	if err != nil {
 		return fmt.Errorf("failed to create logical switch %q, stdout: %q, stderr: %q, error: %v",
 			joinSwitch, stdout, stderr, err)
@@ -189,7 +199,7 @@ func gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*n
 	// Add external interface as a logical port to external_switch.
 	// This is a learning switch port with "unknown" address. The external
 	// world is accessed via this port.
-	cmdArgs := []string{
+	cmdArgs = []string{
 		"--", "--may-exist", "lsp-add", externalSwitch, l3GatewayConfig.InterfaceID,
 		"--", "lsp-set-addresses", l3GatewayConfig.InterfaceID, "unknown",
 		"--", "lsp-set-type", l3GatewayConfig.InterfaceID, "localnet",
