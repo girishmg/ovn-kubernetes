@@ -373,9 +373,8 @@ func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig
 	}
 
 	if l3GatewayConfig.Mode == config.GatewayModeShared {
-		// Add static routes to OVN Cluster Router to enable pods on this Node to
-		// reach the host IP
-		err = addStaticRouteToHost(node, l3GatewayConfig.IPAddress)
+		localOnlyIfaceID := fmt.Sprintf("br-local_%s", node.Name)
+		err = util.LocalGatewayInit(clusterSubnets, joinSubnet, node.Name, localOnlyIfaceID, l3GatewayConfig)
 		if err != nil {
 			return err
 		}
@@ -398,25 +397,6 @@ func (oc *Controller) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig
 	}
 
 	return err
-}
-
-func addStaticRouteToHost(node *kapi.Node, nicIP *net.IPNet) error {
-	k8sClusterRouter := util.GetK8sClusterRouter()
-	subnet, err := util.ParseNodeHostSubnetAnnotation(node)
-	if err != nil {
-		return fmt.Errorf("failed to get interface IP address for %s (%v)",
-			util.K8sMgmtIntfName, err)
-	}
-	_, secondIP := util.GetNodeWellKnownAddresses(subnet)
-	prefix := nicIP.IP.String() + "/32"
-	nexthop := secondIP.IP.String()
-	_, stderr, err := util.RunOVNNbctl("--may-exist", "lr-route-add", k8sClusterRouter, prefix, nexthop)
-	if err != nil {
-		return fmt.Errorf("failed to add static route '%s via %s' for host %q on %s "+
-			"stderr: %q, error: %v", nicIP, secondIP, node.Name, k8sClusterRouter, stderr, err)
-	}
-
-	return nil
 }
 
 func (oc *Controller) ensureNodeLogicalNetwork(nodeName string, hostsubnet *net.IPNet) error {
@@ -669,7 +649,7 @@ func (oc *Controller) deleteNode(nodeName string, nodeSubnet, joinSubnet *net.IP
 		klog.Errorf("Error deleting node %s logical network: %v", nodeName, err)
 	}
 
-	if err := util.GatewayCleanup(nodeName, nodeSubnet); err != nil {
+	if err := util.GatewayCleanup(nodeName); err != nil {
 		return fmt.Errorf("Failed to clean up node %s gateway: (%v)", nodeName, err)
 	}
 

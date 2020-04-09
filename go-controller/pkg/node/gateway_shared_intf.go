@@ -329,13 +329,19 @@ func (n *OvnNode) initSharedGateway(subnet *net.IPNet, gwNextHop net.IP, gwIntf 
 		return nil, fmt.Errorf("%s does not have a ipv4 address", gwIntf)
 	}
 
-	ifaceID, macAddress, err := bridgedGatewayNodeSetup(n.name, bridgeName, gwIntf, brCreated)
+	ifaceID, macAddress, err := bridgedGatewayNodeSetup(n.name, bridgeName, gwIntf,
+		util.PhysicalNetworkName, brCreated)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up shared interface gateway: %v", err)
 	}
 
+	localMacAddress, err := initLocalOnlyGateway(n.name, subnet, n.stopChan)
+	if err != nil {
+		return nil, err
+	}
+
 	err = util.SetSharedL3GatewayConfig(nodeAnnotator, ifaceID, macAddress, ipAddress, gwNextHop,
-		config.Gateway.NodeportEnable, config.Gateway.VLANID)
+		localMacAddress, config.Gateway.NodeportEnable, config.Gateway.VLANID)
 	if err != nil {
 		return nil, err
 	}
