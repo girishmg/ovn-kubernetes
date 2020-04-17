@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
 	"k8s.io/client-go/kubernetes"
@@ -133,10 +133,42 @@ func cniRequestToPodRequest(cr *Request) (*PodRequest, error) {
 // CNI server client
 func (s *Server) handleCNIRequest(w http.ResponseWriter, r *http.Request) {
 	var cr Request
-	startTime := time.Now()
 	b, _ := ioutil.ReadAll(r.Body)
 	if err := json.Unmarshal(b, &cr); err != nil {
 		http.Error(w, fmt.Sprintf("%v", err), http.StatusBadRequest)
+		return
+	}
+
+	if len(cr.Metrics) != 0 {
+		// this is the metrics info comes from cni shim
+		cmd, ok := cr.Metrics["command"]
+		if !ok {
+			http.Error(w, "invalid metrics info", http.StatusBadRequest)
+			return
+		}
+		hasErr, ok := cr.Metrics["hasErr"]
+		if !ok {
+			http.Error(w, "invalid metrics info", http.StatusBadRequest)
+			return
+
+		}
+		secString, ok := cr.Metrics["seconds"]
+		if !ok {
+			http.Error(w, "invalid metrics info", http.StatusBadRequest)
+			return
+
+		}
+		seconds, err := strconv.ParseFloat(secString, 64)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("%v", err), http.StatusBadRequest)
+			return
+		}
+		metrics.MetricCNIRequestDuration.WithLabelValues(cmd, hasErr).Observe(seconds)
+		// Empty response JSON means success with no body
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte{}); err != nil {
+			klog.Warningf("Error writing %s HTTP response for metrics post", err)
+		}
 		return
 	}
 	req, err := cniRequestToPodRequest(&cr)
@@ -147,9 +179,7 @@ func (s *Server) handleCNIRequest(w http.ResponseWriter, r *http.Request) {
 
 	klog.Infof("Waiting for %s result for pod %s/%s", req.Command, req.PodNamespace, req.PodName)
 	result, err := s.requestFunc(req, s.kclient)
-	hasErr := "false"
 	if err != nil {
-		hasErr = "true"
 		http.Error(w, fmt.Sprintf("%v", err), http.StatusBadRequest)
 	} else {
 		// Empty response JSON means success with no body
@@ -158,7 +188,4 @@ func (s *Server) handleCNIRequest(w http.ResponseWriter, r *http.Request) {
 			klog.Warningf("Error writing %s HTTP response: %v", req.Command, err)
 		}
 	}
-
-	metrics.MetricCNIRequestDuration.WithLabelValues(string(req.Command), hasErr).Observe(
-		time.Since(startTime).Seconds())
 }

@@ -43,6 +43,8 @@ type Request struct {
 	Env map[string]string `json:"env,omitempty"`
 	// CNI configuration passed via stdin to the CNI plugin
 	Config []byte `json:"config,omitempty"`
+	// Metrics info to report from CNI shim to CNI server
+	Metrics map[string]string `json:"metrics,omitempty"`
 }
 
 // Response sent to the OVN CNI plugin by the Server
