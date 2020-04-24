@@ -153,6 +153,21 @@ func tearDownManagementPortConfig(mpcfg *managementPortConfig) error {
 	return nil
 }
 
+// iptChainExist returns true if the given chain exists in the given iptables table.
+func iptChainExist(ipt util.IPTablesHelper, table, chain string) (bool, error) {
+	chains, err := ipt.ListChains(table)
+	if err != nil {
+		return false, fmt.Errorf("failed to list iptables chains of table %s: %v", table, err)
+	}
+	for _, ch := range chains {
+		if ch == chain {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func setupManagementPortIPFamilyConfig(mpcfg *managementPortConfig, cfg *managementPortIPFamilyConfig) ([]string, error) {
 	var warnings []string
 	var err error
@@ -200,6 +215,15 @@ func setupManagementPortIPFamilyConfig(mpcfg *managementPortConfig, cfg *managem
 	}
 	if err != nil {
 		return warnings, err
+	}
+
+	if exists, err = iptChainExist(cfg.ipt, "nat", iptableMgmPortChain); err == nil && !exists {
+		warnings = append(warnings, fmt.Sprintf("missing iptables chain %s in the nat table, adding it",
+			iptableMgmPortChain))
+		err = cfg.ipt.NewChain("nat", iptableMgmPortChain)
+	}
+	if err != nil {
+		return warnings, fmt.Errorf("could not set up iptables chain rules for management port: %v", err)
 	}
 
 	rule := []string{"-o", mpcfg.ifName, "-j", iptableMgmPortChain}
