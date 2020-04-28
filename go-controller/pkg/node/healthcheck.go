@@ -121,11 +121,12 @@ func checkForStaleOVSInterfaces(stopChan chan struct{}) {
 
 // checkDefaultOpenFlow checks for the existence of default OpenFlow rules and
 // exits if the output is not as expected
-func checkDefaultConntrackRules(gwBridge string, nFlows int, stopChan chan struct{}) {
+func checkDefaultConntrackRules(gwBridge string, physPort, patchPort, ofportPhys, ofportPatch string,
+	nFlows int, stopChan chan struct{}) {
 	flowCount := fmt.Sprintf("flow_count=%d", nFlows)
 	for {
 		select {
-		case <-time.After(30 * time.Second):
+		case <-time.After(15 * time.Second):
 			out, _, err := util.RunOVSOfctl("dump-aggregate", gwBridge,
 				fmt.Sprintf("cookie=%s/-1", defaultOpenFlowCookie))
 			if err != nil {
@@ -136,6 +137,29 @@ func checkDefaultConntrackRules(gwBridge string, nFlows int, stopChan chan struc
 			if !strings.Contains(out, flowCount) {
 				klog.Errorf("fatal error: unexpected default OpenFlows count, expect %d output: %v\n",
 					nFlows, out)
+				os.Exit(1)
+			}
+
+			// In some cases, even the flow number looks ok, the port number in a flow could become obsolete,
+			curOfportPatch, stderr, err := util.RunOVSVsctl("--if-exists", "get", "Interface", patchPort, "ofport")
+			if err != nil {
+				klog.Errorf("Failed to get ofport of %s, stderr: %q, error: %v", patchPort, stderr, err)
+				continue
+			}
+			if ofportPatch != curOfportPatch {
+				klog.Errorf("fatal error: ofport of %s has changed from %s to %s",
+					patchPort, ofportPatch, curOfportPatch)
+				os.Exit(1)
+			}
+
+			curOfportPhys, stderr, err := util.RunOVSVsctl("--if-exists", "get", "interface", physPort, "ofport")
+			if err != nil {
+				klog.Errorf("Failed to get ofport of %s, stderr: %q, error: %v", physPort, stderr, err)
+				continue
+			}
+			if ofportPhys != curOfportPhys {
+				klog.Errorf("fatal error: ofport of %s has changed from %s to %s",
+					physPort, ofportPhys, curOfportPhys)
 				os.Exit(1)
 			}
 		case <-stopChan:
