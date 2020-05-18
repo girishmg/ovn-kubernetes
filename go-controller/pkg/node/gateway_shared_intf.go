@@ -45,6 +45,8 @@ func addService(service *kapi.Service, inport, outport, gwBridge string) {
 				svcPort.NodePort, stderr, err)
 		}
 	}
+
+	addSharedGatewayIptRules(service)
 }
 
 func deleteService(service *kapi.Service, inport, gwBridge string) {
@@ -70,6 +72,8 @@ func deleteService(service *kapi.Service, inport, gwBridge string) {
 				svcPort.NodePort, stderr, err)
 		}
 	}
+
+	delSharedGatewayIptRules(service)
 }
 
 func syncServices(services []interface{}, inport, gwBridge string) {
@@ -169,6 +173,11 @@ func nodePortWatcher(nodeName, gwBridge, gwIntf string, wf *factory.WatchFactory
 	if err != nil {
 		return fmt.Errorf("Failed to get ofport of %s, stderr: %q, error: %v",
 			gwIntf, stderr, err)
+	}
+
+	err = initNodePortIptableChain()
+	if err != nil {
+		return fmt.Errorf("failed to initialize iptables NodePort Chain: %v", err)
 	}
 
 	_, err = wf.AddServiceHandler(cache.ResourceEventHandlerFuncs{
@@ -409,5 +418,7 @@ func cleanupSharedGateway() error {
 	if err != nil {
 		return fmt.Errorf("Failed to replace-flows on bridge %q stderr:%s (%v)", bridgeName, stderr, err)
 	}
+
+	deleteNodePortIptableChain()
 	return nil
 }
