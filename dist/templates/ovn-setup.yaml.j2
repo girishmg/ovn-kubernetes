@@ -95,7 +95,7 @@ data:
   net_cidr:      "{{ net_cidr }}"
   svc_cidr:      "{{ svc_cidr }}"
   k8s_apiserver: "{{ k8s_apiserver }}"
-  mtu:           "{{ mtu_value }}"
+  mtu:           "{{ mtu_value | default('1440') }}"
 
 ---
 apiVersion: v1
