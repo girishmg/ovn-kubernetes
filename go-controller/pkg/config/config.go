@@ -29,6 +29,9 @@ const DefaultEncapPort = 6081
 
 const DefaultAPIServer = "http://localhost:8443"
 
+// DefaultNodeSubnetSelectorName captures default name for the node subnet selector
+const DefaultNodeSubnetSelectorName = "default"
+
 // IP address range from which subnet is allocated for per-node join switch
 const (
 	V4JoinSubnet = "100.64.0.0/16"
@@ -145,9 +148,12 @@ type DefaultConfig struct {
 	// RawClusterSubnets holds the unparsed cluster subnets. Should only be
 	// used inside config module.
 	RawClusterSubnets string `gcfg:"cluster-subnets"`
-	// ClusterSubnets holds parsed cluster subnet entries and may be used
+	// ClusterSubnets holds all parsed cluster subnet entries and may be used
 	// outside the config module.
 	ClusterSubnets []CIDRNetworkEntry
+	// ClusterSubnetsBySelector holds all parsed cluster subnet entries keyed by selectorName
+	// and may be used outside the config module.
+	ClusterSubnetsBySelector map[string][]CIDRNetworkEntry
 }
 
 // LoggingConfig holds logging-related parsed config file parameters and command-line overrides
@@ -1040,7 +1046,7 @@ func buildHybridOverlayConfig(ctx *cli.Context, cli, file *config, allSubnets *c
 
 	if HybridOverlay.Enabled {
 		var err error
-		HybridOverlay.ClusterSubnets, err = ParseClusterSubnetEntries(HybridOverlay.RawClusterSubnets)
+		_, HybridOverlay.ClusterSubnets, err = ParseClusterSubnetEntries(HybridOverlay.RawClusterSubnets)
 		if err != nil {
 			return fmt.Errorf("hybrid overlay cluster subnet invalid: %v", err)
 		}
@@ -1070,7 +1076,7 @@ func buildDefaultConfig(cli, file *config, allSubnets *configSubnets) error {
 	}
 
 	var err error
-	Default.ClusterSubnets, err = ParseClusterSubnetEntries(Default.RawClusterSubnets)
+	Default.ClusterSubnetsBySelector, Default.ClusterSubnets, err = ParseClusterSubnetEntries(Default.RawClusterSubnets)
 	if err != nil {
 		return fmt.Errorf("cluster subnet invalid: %v", err)
 	}

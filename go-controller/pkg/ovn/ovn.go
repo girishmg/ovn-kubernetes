@@ -73,8 +73,9 @@ type Controller struct {
 	watchFactory *factory.WatchFactory
 	stopChan     <-chan struct{}
 
-	masterSubnetAllocator *allocator.SubnetAllocator
-	joinSubnetAllocator   *allocator.SubnetAllocator
+	masterSubnetLabelSelector map[string]*metav1.LabelSelector
+	masterSubnetAllocator     map[string]*allocator.SubnetAllocator
+	joinSubnetAllocator       *allocator.SubnetAllocator
 
 	TCPLoadBalancerUUID  string
 	UDPLoadBalancerUUID  string
@@ -155,27 +156,28 @@ const (
 // infrastructure and policy
 func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory, stopChan <-chan struct{}) *Controller {
 	return &Controller{
-		kube:                     &kube.Kube{KClient: kubeClient},
-		watchFactory:             wf,
-		stopChan:                 stopChan,
-		masterSubnetAllocator:    allocator.NewSubnetAllocator(),
-		logicalSwitchCache:       make(map[string][]*net.IPNet),
-		joinSubnetAllocator:      allocator.NewSubnetAllocator(),
-		logicalPortCache:         newPortCache(stopChan),
-		namespaces:               make(map[string]*namespaceInfo),
-		namespacesMutex:          sync.Mutex{},
-		lspIngressDenyCache:      make(map[string]int),
-		lspEgressDenyCache:       make(map[string]int),
-		lspMutex:                 &sync.Mutex{},
-		lsMutex:                  &sync.Mutex{},
-		loadbalancerClusterCache: make(map[kapi.Protocol]string),
-		loadbalancerGWCache:      make(map[kapi.Protocol]string),
-		multicastSupport:         config.EnableMulticast,
-		serviceVIPToName:         make(map[ServiceVIPKey]types.NamespacedName),
-		serviceVIPToNameLock:     sync.Mutex{},
-		serviceLBMap:             make(map[string]map[string]*loadBalancerConf),
-		serviceLBLock:            sync.Mutex{},
-		recorder:                 util.EventRecorder(kubeClient),
+		kube:                      &kube.Kube{KClient: kubeClient},
+		watchFactory:              wf,
+		stopChan:                  stopChan,
+		masterSubnetLabelSelector: make(map[string]*metav1.LabelSelector),
+		masterSubnetAllocator:     make(map[string]*allocator.SubnetAllocator),
+		logicalSwitchCache:        make(map[string][]*net.IPNet),
+		joinSubnetAllocator:       allocator.NewSubnetAllocator(),
+		logicalPortCache:          newPortCache(stopChan),
+		namespaces:                make(map[string]*namespaceInfo),
+		namespacesMutex:           sync.Mutex{},
+		lspIngressDenyCache:       make(map[string]int),
+		lspEgressDenyCache:        make(map[string]int),
+		lspMutex:                  &sync.Mutex{},
+		lsMutex:                   &sync.Mutex{},
+		loadbalancerClusterCache:  make(map[kapi.Protocol]string),
+		loadbalancerGWCache:       make(map[kapi.Protocol]string),
+		multicastSupport:          config.EnableMulticast,
+		serviceVIPToName:          make(map[ServiceVIPKey]types.NamespacedName),
+		serviceVIPToNameLock:      sync.Mutex{},
+		serviceLBMap:              make(map[string]map[string]*loadBalancerConf),
+		serviceLBLock:             sync.Mutex{},
+		recorder:                  util.EventRecorder(kubeClient),
 	}
 }
 
@@ -605,6 +607,13 @@ func (oc *Controller) WatchNodes() error {
 
 			klog.V(5).Infof("Updated event for Node %q", node.Name)
 
+			newSelectorName := oc.getSubnetSelectorName(node)
+			oldSelectorName := oc.getSubnetSelectorName(oldNode)
+			if newSelectorName != oldSelectorName {
+				klog.Errorf("cannot change node label %s. subnet selector has been changed from %s to %s",
+					OvnNodeSubnetSelector, oldSelectorName, newSelectorName)
+			}
+
 			_, failed := mgmtPortFailed.Load(node.Name)
 			if failed || macAddressChanged(oldNode, node) {
 				err := oc.syncNodeManagementPort(node, nil)
@@ -634,9 +643,10 @@ func (oc *Controller) WatchNodes() error {
 			klog.V(5).Infof("Delete event for Node %q. Removing the node from "+
 				"various caches", node.Name)
 
+			selectorName := oc.getSubnetSelectorName(node)
 			nodeSubnets, _ := util.ParseNodeHostSubnetAnnotation(node)
 			joinSubnets, _ := util.ParseNodeJoinSubnetAnnotation(node)
-			err := oc.deleteNode(node.Name, nodeSubnets, joinSubnets)
+			err := oc.deleteNode(node.Name, selectorName, nodeSubnets, joinSubnets)
 			if err != nil {
 				klog.Error(err)
 			}

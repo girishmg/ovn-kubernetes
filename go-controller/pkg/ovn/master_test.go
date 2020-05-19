@@ -140,7 +140,7 @@ func defaultFakeExec(nodeSubnet, nodeName string, sctpSupport bool) (*ovntest.Fa
 
 	fexec.AddFakeCmdsNoOutputNoError([]string{
 		"ovn-sbctl --timeout=15 --data=bare --no-heading --columns=name,hostname --format=json list Chassis",
-		"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name,other-config find logical_switch other-config:subnet!=_",
+		"ovn-nbctl --timeout=15 --data=bare --no-heading --format=csv --columns=name,other-config,external_ids find logical_switch other-config:subnet!=_",
 	})
 	fexec.AddFakeCmdsNoOutputNoError([]string{
 		"ovn-nbctl --timeout=15 --if-exists lrp-del rtos-" + nodeName + " -- lrp-add ovn_cluster_router rtos-" + nodeName + " " + lrpMAC + " " + gwCIDR,
@@ -494,13 +494,10 @@ var _ = Describe("Master Operations", func() {
 				"ovn-sbctl --timeout=15 --data=bare --no-heading --columns=name,hostname --format=json list Chassis",
 			})
 			fexec.AddFakeCmd(&ovntest.ExpectedCmd{
-				Cmd: "ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name,other-config find logical_switch other-config:subnet!=_",
+				Cmd: "ovn-nbctl --timeout=15 --data=bare --no-heading --format=csv --columns=name,other-config,external_ids find logical_switch other-config:subnet!=_",
 				// Return two nodes
-				Output: fmt.Sprintf(`%s
-subnet=%s
-
-%s
-subnet=%s
+				Output: fmt.Sprintf(`%s,subnet=%s,
+%s,subnet=%s,
 `, node1Name, node1Subnet, masterName, masterSubnet),
 			})
 
@@ -733,7 +730,7 @@ var _ = Describe("Gateway Init Operations", func() {
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{
 				"ovn-sbctl --timeout=15 --data=bare --no-heading --columns=name,hostname --format=json list Chassis",
-				"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name,other-config find logical_switch other-config:subnet!=_",
+				"ovn-nbctl --timeout=15 --data=bare --no-heading --format=csv --columns=name,other-config,external_ids find logical_switch other-config:subnet!=_",
 			})
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{
@@ -754,7 +751,7 @@ var _ = Describe("Gateway Init Operations", func() {
 			fexec.AddFakeCmdsNoOutputNoError([]string{
 				"ovn-nbctl --timeout=15 -- --if-exists remove logical_switch " + nodeName + " other-config exclude_ips",
 				"ovn-nbctl --timeout=15 -- --may-exist lr-add " + gwRouter + " -- set logical_router " + gwRouter + " options:chassis=" + systemID + " external_ids:physical_ip=169.254.33.2 external_ids:physical_ips=169.254.33.2",
-				"ovn-nbctl --timeout=15 -- --may-exist ls-add " + joinSwitch,
+				"ovn-nbctl --timeout=15 -- --may-exist ls-add " + joinSwitch + " -- set logical_switch " + joinSwitch + " other-config:subnet=" + joinSubnet,
 				"ovn-nbctl --timeout=15 -- --may-exist lsp-add " + joinSwitch + " jtor-" + gwRouter + " -- set logical_switch_port jtor-" + gwRouter + " type=router options:router-port=rtoj-" + gwRouter + " addresses=router",
 				"ovn-nbctl --timeout=15 -- --if-exists lrp-del rtoj-" + gwRouter + " -- lrp-add " + gwRouter + " rtoj-" + gwRouter + " " + lrpMAC + " " + lrpIP + "/29",
 				"ovn-nbctl --timeout=15 -- --may-exist lsp-add " + joinSwitch + " jtod-" + nodeName + " -- set logical_switch_port jtod-" + nodeName + " type=router options:router-port=dtoj-" + nodeName + " addresses=router",
@@ -782,7 +779,7 @@ var _ = Describe("Gateway Init Operations", func() {
 			})
 			fexec.AddFakeCmdsNoOutputNoError([]string{
 				"ovn-nbctl --timeout=15 -- --may-exist lr-add " + gwRouter + " -- set logical_router " + gwRouter + " options:chassis=" + systemID + " external_ids:physical_ip=169.254.33.2 external_ids:physical_ips=169.254.33.2",
-				"ovn-nbctl --timeout=15 -- --may-exist ls-add " + joinSwitch,
+				"ovn-nbctl --timeout=15 -- --may-exist ls-add " + joinSwitch + " -- set logical_switch " + joinSwitch + " other-config:subnet=" + joinSubnet,
 				"ovn-nbctl --timeout=15 -- --may-exist lsp-add " + joinSwitch + " jtor-" + gwRouter + " -- set logical_switch_port jtor-" + gwRouter + " type=router options:router-port=rtoj-" + gwRouter + " addresses=router",
 				"ovn-nbctl --timeout=15 -- --if-exists lrp-del rtoj-" + gwRouter + " -- lrp-add " + gwRouter + " rtoj-" + gwRouter + " " + lrpMAC + " " + lrpIP + "/29",
 				"ovn-nbctl --timeout=15 -- --may-exist lsp-add " + joinSwitch + " jtod-" + nodeName + " -- set logical_switch_port jtod-" + nodeName + " type=router options:router-port=dtoj-" + nodeName + " addresses=router",
@@ -918,7 +915,7 @@ var _ = Describe("Gateway Init Operations", func() {
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{
 				"ovn-sbctl --timeout=15 --data=bare --no-heading --columns=name,hostname --format=json list Chassis",
-				"ovn-nbctl --timeout=15 --data=bare --no-heading --columns=name,other-config find logical_switch other-config:subnet!=_",
+				"ovn-nbctl --timeout=15 --data=bare --no-heading --format=csv --columns=name,other-config,external_ids find logical_switch other-config:subnet!=_",
 			})
 
 			fexec.AddFakeCmdsNoOutputNoError([]string{
@@ -939,7 +936,7 @@ var _ = Describe("Gateway Init Operations", func() {
 			fexec.AddFakeCmdsNoOutputNoError([]string{
 				"ovn-nbctl --timeout=15 -- --if-exists remove logical_switch " + nodeName + " other-config exclude_ips",
 				"ovn-nbctl --timeout=15 -- --may-exist lr-add " + gwRouter + " -- set logical_router " + gwRouter + " options:chassis=" + systemID + " external_ids:physical_ip=" + physicalGatewayIP + " external_ids:physical_ips=" + physicalGatewayIP,
-				"ovn-nbctl --timeout=15 -- --may-exist ls-add " + joinSwitch,
+				"ovn-nbctl --timeout=15 -- --may-exist ls-add " + joinSwitch + " -- set logical_switch " + joinSwitch + " other-config:subnet=" + joinSubnet,
 				"ovn-nbctl --timeout=15 -- --may-exist lsp-add " + joinSwitch + " jtor-" + gwRouter + " -- set logical_switch_port jtor-" + gwRouter + " type=router options:router-port=rtoj-" + gwRouter + " addresses=router",
 				"ovn-nbctl --timeout=15 -- --if-exists lrp-del rtoj-" + gwRouter + " -- lrp-add " + gwRouter + " rtoj-" + gwRouter + " " + lrpMAC + " " + lrpIP + "/29",
 				"ovn-nbctl --timeout=15 -- --may-exist lsp-add " + joinSwitch + " jtod-" + nodeName + " -- set logical_switch_port jtod-" + nodeName + " type=router options:router-port=dtoj-" + nodeName + " addresses=router",
@@ -971,7 +968,7 @@ var _ = Describe("Gateway Init Operations", func() {
 			})
 			fexec.AddFakeCmdsNoOutputNoError([]string{
 				"ovn-nbctl --timeout=15 -- --may-exist lr-add " + gwRouter + " -- set logical_router " + gwRouter + " options:chassis=" + systemID + " external_ids:physical_ip=" + physicalGatewayIP + " external_ids:physical_ips=" + physicalGatewayIP,
-				"ovn-nbctl --timeout=15 -- --may-exist ls-add " + joinSwitch,
+				"ovn-nbctl --timeout=15 -- --may-exist ls-add " + joinSwitch + " -- set logical_switch " + joinSwitch + " other-config:subnet=" + joinSubnet,
 				"ovn-nbctl --timeout=15 -- --may-exist lsp-add " + joinSwitch + " jtor-" + gwRouter + " -- set logical_switch_port jtor-" + gwRouter + " type=router options:router-port=rtoj-" + gwRouter + " addresses=router",
 				"ovn-nbctl --timeout=15 -- --if-exists lrp-del rtoj-" + gwRouter + " -- lrp-add " + gwRouter + " rtoj-" + gwRouter + " " + lrpMAC + " " + lrpIP + "/29",
 				"ovn-nbctl --timeout=15 -- --may-exist lsp-add " + joinSwitch + " jtod-" + nodeName + " -- set logical_switch_port jtod-" + nodeName + " type=router options:router-port=dtoj-" + nodeName + " addresses=router",

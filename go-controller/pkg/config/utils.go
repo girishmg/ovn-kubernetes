@@ -24,24 +24,37 @@ func (e CIDRNetworkEntry) HostBits() uint32 {
 // ParseClusterSubnetEntries returns the parsed set of CIDRNetworkEntries passed by the user on the command line
 // These entries define the clusters network space by specifying a set of CIDR and netmasks the SDN can allocate
 // addresses from.
-func ParseClusterSubnetEntries(clusterSubnetCmd string) ([]CIDRNetworkEntry, error) {
+func ParseClusterSubnetEntries(clusterSubnetCmd string) (map[string][]CIDRNetworkEntry, []CIDRNetworkEntry, error) {
+	var parsedClusterListMap map[string][]CIDRNetworkEntry
 	var parsedClusterList []CIDRNetworkEntry
 	ipv6 := false
 	clusterEntriesList := strings.Split(clusterSubnetCmd, ",")
 
-	for _, clusterEntry := range clusterEntriesList {
+	parsedClusterListMap = make(map[string][]CIDRNetworkEntry)
+	for _, clusterEntryWithSelector := range clusterEntriesList {
 		var parsedClusterEntry CIDRNetworkEntry
 
+		clusterEntryInfo := strings.SplitN(clusterEntryWithSelector, "@", 2)
+
+		// if no selector name is specified, assign the default selector name
+		selectorName := DefaultNodeSubnetSelectorName
+		if len(clusterEntryInfo) == 2 {
+			selectorName = strings.TrimSpace(clusterEntryInfo[1])
+			if len(selectorName) == 0 {
+				return nil, nil, fmt.Errorf("invalid selector name %s for %q", selectorName, clusterEntryWithSelector)
+			}
+		}
+		clusterEntry := clusterEntryInfo[0]
 		splitClusterEntry := strings.Split(clusterEntry, "/")
 
 		if len(splitClusterEntry) < 2 || len(splitClusterEntry) > 3 {
-			return nil, fmt.Errorf("CIDR %q not properly formatted", clusterEntry)
+			return nil, nil, fmt.Errorf("CIDR %q not properly formatted", clusterEntry)
 		}
 
 		var err error
 		_, parsedClusterEntry.CIDR, err = net.ParseCIDR(fmt.Sprintf("%s/%s", splitClusterEntry[0], splitClusterEntry[1]))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		if utilnet.IsIPv6(parsedClusterEntry.CIDR.IP) {
@@ -52,12 +65,12 @@ func ParseClusterSubnetEntries(clusterSubnetCmd string) ([]CIDRNetworkEntry, err
 		if len(splitClusterEntry) == 3 {
 			tmp, err := strconv.ParseUint(splitClusterEntry[2], 10, 32)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			parsedClusterEntry.HostSubnetLength = uint32(tmp)
 
 			if ipv6 && parsedClusterEntry.HostSubnetLength != 64 {
-				return nil, fmt.Errorf("IPv6 only supports /64 host subnets")
+				return nil, nil, fmt.Errorf("IPv6 only supports /64 host subnets")
 			}
 		} else {
 			if ipv6 {
@@ -69,18 +82,22 @@ func ParseClusterSubnetEntries(clusterSubnetCmd string) ([]CIDRNetworkEntry, err
 		}
 
 		if parsedClusterEntry.HostSubnetLength <= uint32(entryMaskLength) {
-			return nil, fmt.Errorf("cannot use a host subnet length mask shorter than or equal to the cluster subnet mask. "+
+			return nil, nil, fmt.Errorf("cannot use a host subnet length mask shorter than or equal to the cluster subnet mask. "+
 				"host subnet length: %d, cluster subnet length: %d", parsedClusterEntry.HostSubnetLength, entryMaskLength)
 		}
 
+		if _, ok := parsedClusterListMap[selectorName]; !ok {
+			parsedClusterListMap[selectorName] = []CIDRNetworkEntry{}
+		}
+		parsedClusterListMap[selectorName] = append(parsedClusterListMap[selectorName], parsedClusterEntry)
 		parsedClusterList = append(parsedClusterList, parsedClusterEntry)
 	}
 
 	if len(parsedClusterList) == 0 {
-		return nil, fmt.Errorf("failed to parse any CIDRs from %q", clusterSubnetCmd)
+		return nil, nil, fmt.Errorf("failed to parse any CIDRs from %q", clusterSubnetCmd)
 	}
 
-	return parsedClusterList, nil
+	return parsedClusterListMap, parsedClusterList, nil
 }
 
 type configSubnetType string
