@@ -5,17 +5,20 @@ import (
 	"net"
 )
 
-func createNodePortIptableChain() error {
+func initSharedGatewayIPTables() error {
 	return nil
 }
 
-func deleteNodePortIptableChain() {
+func cleanupSharedGatewayIPTChains() {
 }
 
 func addSharedGatewayIptRules(service *kapi.Service, nodeIP *net.IPNet) {
 }
 
 func delSharedGatewayIptRules(service *kapi.Service, nodeIP *net.IPNet) {
+}
+
+func syncSharedGatewayIptRules(services []interface{}) {
 }
 
 func setupLocalNodeAccessBridge(nodeName string, subnet *net.IPNet) error {

@@ -93,7 +93,8 @@ func testManagementPort(ctx *cli.Context, fexec *ovntest.FakeExec, testNS ns.Net
 
 	nodeSubnetCIDRs := make([]*net.IPNet, len(configs))
 	mgtPortAddrs := make([]*netlink.Addr, len(configs))
-	fakeipt := make([]*util.FakeIPTables, len(configs))
+
+	fakeipt := util.NewFakeIPTables()
 	for i, cfg := range configs {
 		nodeSubnetCIDRs[i] = ovntest.MustParseIPNet(cfg.nodeSubnet)
 		mpCIDR := &net.IPNet{
@@ -103,12 +104,9 @@ func testManagementPort(ctx *cli.Context, fexec *ovntest.FakeExec, testNS ns.Net
 		mgtPortAddrs[i], err = netlink.ParseAddr(mpCIDR.String())
 		Expect(err).NotTo(HaveOccurred())
 
-		fakeipt[i], err = util.NewFakeWithProtocol(cfg.protocol)
+		err = fakeipt[cfg.protocol].NewChain("nat", "POSTROUTING")
 		Expect(err).NotTo(HaveOccurred())
-		util.SetIPTablesHelper(cfg.protocol, fakeipt[i])
-		err = fakeipt[i].NewChain("nat", "POSTROUTING")
-		Expect(err).NotTo(HaveOccurred())
-		err = fakeipt[i].NewChain("nat", "OVN-KUBE-SNAT-MGMTPORT")
+		err = fakeipt[cfg.protocol].NewChain("nat", "OVN-KUBE-SNAT-MGMTPORT")
 		Expect(err).NotTo(HaveOccurred())
 	}
 
@@ -192,7 +190,7 @@ func testManagementPort(ctx *cli.Context, fexec *ovntest.FakeExec, testNS ns.Net
 	err = waiter.Wait()
 	Expect(err).NotTo(HaveOccurred())
 
-	for i, cfg := range configs {
+	for _, cfg := range configs {
 		expectedTables := map[string]util.FakeTable{
 			"filter": {},
 			"nat": {
@@ -204,7 +202,8 @@ func testManagementPort(ctx *cli.Context, fexec *ovntest.FakeExec, testNS ns.Net
 				},
 			},
 		}
-		err = fakeipt[i].MatchState(expectedTables)
+		f := fakeipt[cfg.protocol].(*util.FakeIPTables)
+		err = f.MatchState(expectedTables)
 		Expect(err).NotTo(HaveOccurred())
 	}
 
