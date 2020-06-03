@@ -246,8 +246,9 @@ wait_for_event() {
   done
 }
 
-# OVN DBs must be up and initialized before ovn-master and ovn-node PODs can come up
-# This waits for ovnkube-db POD to come up
+# OVN DB must be up and initialized before ovn-master and ovn-node PODs can come up
+# As ovnkube-db endpoint is created by the ovnkube-db pods when they are ready, this
+# function wait for the creation of the endpoint.
 ready_to_start_node() {
 
   # See if ep is available ...
@@ -257,13 +258,6 @@ ready_to_start_node() {
     return 1
   fi
   get_ovn_db_vars
-  # cannot use ovsdb-client in the case of raft, since it will succeed even if one of the
-  # instance of DB is up and running. HOwever, ovn-nbctl always connects to the leader in the clustered
-  # database, so use it.
-  ovn-nbctl --db=${ovn_nbdb_conn} ${ovndb_ctl_ssl_opts} list NB_Global >/dev/null
-  if [[ $? != 0 ]]; then
-    return 1
-  fi
   return 0
 }
 # wait_for_event ready_to_start_node
@@ -678,7 +672,8 @@ sb-ovsdb() {
   }
   ovn-sbctl --inactivity-probe=0 set-connection p${transport}:${ovn_sb_port}:[${ovn_db_host}]
 
-  # create the ovnkube_db endpoint for other pods to query the OVN DB IP
+  # create the ovnkube-db endpoints
+  wait_for_event attempts=10 check_ovnkube_db_ep ${ovn_db_host} ${ovn_nb_port}
   set_ovnkube_db_ep ${ovn_db_host}
 
   tail --follow=name ${OVN_LOGDIR}/ovsdb-server-sb.log &
