@@ -5,8 +5,9 @@ USER root
 ENV PYTHONDONTWRITEBYTECODE yes
 
 # Get openvswitch from Nvidia controlled source
-RUN curl -s https://38a0484b1764796f6ac26ab0eb03336ee168ab7fb3ac03a9:@packages.nvidia.com/install/repositories/sdn/nv-ovs-2-13-0-1/script.rpm.sh | bash
-RUN curl -s https://2dbf41111bc4288a81a96a4c50fc79ce57ed188e61821144:@packages.nvidia.com/install/repositories/sdn/nv-ovn-20-03-0-1/script.rpm.sh | bash
+RUN curl -s https://9f051aa27c890512a412bf1d32524d5ea3dd2172ce76e437:@packages.nvidia.com/install/repositories/sdn/nv-ovs-2-13-latest/script.rpm.sh | bash
+RUN curl -s https://fd73aebffd2574999cccd0204610add162c758cc915f6e70:@packages.nvidia.com/install/repositories/sdn/nv-ovn-20-03-latest/script.rpm.sh | bash
+
 COPY kubernetes.repo /etc/yum.repos.d/kubernetes.repo
 # install epel.repo
 RUN yum install -y epel-release
