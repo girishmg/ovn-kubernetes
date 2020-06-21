@@ -180,6 +180,8 @@ spec:
               fieldPath: status.hostIP
         - name: OVN_SSL_ENABLE
           value: "{{ ovn_ssl_en }}"
+        - name: OVN_NB_PORT
+          value: "{{ ovn_nb_port }}"
         - name: OVN_SB_PORT
           value: "{{ ovn_sb_port }}"
         readinessProbe:
