@@ -82,7 +82,6 @@ type Controller struct {
 	stopChan     <-chan struct{}
 
 	masterSubnetAllocator   *subnetallocator.SubnetAllocator
-	joinSubnetAllocator     *subnetallocator.SubnetAllocator
 	nodeLocalNatIPAllocator *ipallocator.Range
 
 	TCPLoadBalancerUUID  string
@@ -138,6 +137,8 @@ type Controller struct {
 	// Map of load balancers, each containing a map of VIP to OVN LB Config
 	serviceLBMap map[string]map[string]*loadBalancerConf
 
+	joinSwIPManager *joinSwitchIPManager
+
 	serviceLBLock sync.Mutex
 
 	// event recorder used to post events to k8s
@@ -177,7 +178,6 @@ func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory,
 		masterSubnetAllocator:    subnetallocator.NewSubnetAllocator(),
 		nodeLocalNatIPAllocator:  &ipallocator.Range{},
 		lsManager:                newLogicalSwitchManager(),
-		joinSubnetAllocator:      subnetallocator.NewSubnetAllocator(),
 		logicalPortCache:         newPortCache(stopChan),
 		namespaces:               make(map[string]*namespaceInfo),
 		namespacesMutex:          sync.Mutex{},
@@ -190,6 +190,7 @@ func NewOvnController(kubeClient kubernetes.Interface, wf *factory.WatchFactory,
 		serviceVIPToName:         make(map[ServiceVIPKey]types.NamespacedName),
 		serviceVIPToNameLock:     sync.Mutex{},
 		serviceLBMap:             make(map[string]map[string]*loadBalancerConf),
+		joinSwIPManager:          nil,
 		serviceLBLock:            sync.Mutex{},
 		recorder:                 util.EventRecorder(kubeClient),
 		ovnNBClient:              ovnNBClient,
@@ -608,6 +609,9 @@ func (oc *Controller) syncNodeGateway(node *kapi.Node, hostSubnets []*net.IPNet)
 		if err := gatewayCleanup(node.Name); err != nil {
 			return fmt.Errorf("error cleaning up gateway for node %s: %v", node.Name, err)
 		}
+		if err := oc.joinSwIPManager.releaseJoinLRPIPs(node.Name); err != nil {
+			return err
+		}
 	} else if hostSubnets != nil {
 		if err := oc.syncGatewayLogicalNetwork(node, l3GatewayConfig, hostSubnets); err != nil {
 			return fmt.Errorf("error creating gateway for node %s: %v", node.Name, err)
@@ -718,9 +722,8 @@ func (oc *Controller) WatchNodes() error {
 				"various caches", node.Name)
 
 			nodeSubnets, _ := util.ParseNodeHostSubnetAnnotation(node)
-			joinSubnets, _ := util.ParseNodeJoinSubnetAnnotation(node)
 			dnatSnatIPs, _ := util.ParseNodeLocalNatIPAnnotation(node)
-			err := oc.deleteNode(node.Name, nodeSubnets, joinSubnets, dnatSnatIPs)
+			err := oc.deleteNode(node.Name, nodeSubnets, dnatSnatIPs)
 			if err != nil {
 				klog.Error(err)
 			}
