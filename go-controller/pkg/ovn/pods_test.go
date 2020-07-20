@@ -141,10 +141,10 @@ func (p pod) addCmdsForNonExistingPod(fexec *ovntest.FakeExec) {
 
 func (p pod) delCmds(fexec *ovntest.FakeExec) {
 	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 --if-exists remove port_group mcastPortGroupDeny ports " + fakeUUID,
+		"ovn-nbctl --timeout=15 --if-exists lsp-del " + p.portName,
 	})
 	fexec.AddFakeCmdsNoOutputNoError([]string{
-		"ovn-nbctl --timeout=15 --if-exists lsp-del " + p.portName,
+		"ovn-nbctl --timeout=15 --if-exists remove port_group mcastPortGroupDeny ports " + fakeUUID,
 	})
 }
 
@@ -333,8 +333,8 @@ var _ = Describe("OVN Pod Operations", func() {
 					"10.128.1.2",
 					"10.128.1.1",
 					"myPod",
-					"10.128.1.3",
-					"0a:58:0a:80:01:03",
+					"10.128.1.4",
+					"0a:58:0a:80:01:04",
 					"namespace",
 				)
 

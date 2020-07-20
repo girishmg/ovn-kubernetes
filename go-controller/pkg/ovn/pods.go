@@ -77,9 +77,31 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod) {
 	klog.Infof("Deleting pod: %s", podDesc)
 
 	logicalPort := podLogicalPortName(pod)
+
+	// logical switch port may be created even the port is not added to the cache, delete it first
+	out, stderr, err := util.RunOVNNbctl("--if-exists", "lsp-del", logicalPort)
+	if err != nil {
+		klog.Errorf("Error in deleting pod %s logical port "+
+			"stdout: %q, stderr: %q, (%v)",
+			podDesc, out, stderr, err)
+	}
+
 	portInfo, err := oc.logicalPortCache.get(logicalPort)
 	if err != nil {
 		klog.Errorf(err.Error())
+		// if the pod is not in the cache, the IPs may already been reserved in syncPods()
+		nodeName := pod.Spec.NodeName
+		if nodeName != "" {
+			annotations, err := util.UnmarshalPodAnnotation(pod.Annotations)
+			if err == nil {
+				podIPs := annotations.IPs
+				if len(podIPs) != 0 {
+					if err := oc.lsManager.ReleaseIPs(nodeName, podIPs); err != nil {
+						klog.Errorf(err.Error())
+					}
+				}
+			}
+		}
 		return
 	}
 
@@ -94,13 +116,6 @@ func (oc *Controller) deleteLogicalPort(pod *kapi.Pod) {
 
 	if err := oc.deletePodFromNamespace(pod.Namespace, portInfo); err != nil {
 		klog.Errorf(err.Error())
-	}
-
-	out, stderr, err := util.RunOVNNbctl("--if-exists", "lsp-del", logicalPort)
-	if err != nil {
-		klog.Errorf("Error in deleting pod %s logical port "+
-			"stdout: %q, stderr: %q, (%v)",
-			podDesc, out, stderr, err)
 	}
 
 	if err := oc.lsManager.ReleaseIPs(portInfo.logicalSwitch, portInfo.ips); err != nil {
@@ -239,148 +254,156 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) (err error) {
 	var cmds []*goovn.OvnCommand
 	var addresses []string
 	var cmd *goovn.OvnCommand
-	var releaseIPs bool
+	var podAddedInCache bool
+
+	annotation, _ := util.UnmarshalPodAnnotation(pod.Annotations)
 
 	// Check if the pod's logical switch port already exists. If it
 	// does don't re-add the port to OVN as this will change its
 	// UUID and and the port cache, address sets, and port groups
 	// will still have the old UUID.
-	lsp, err := oc.ovnNBClient.LSPGet(portName)
-	if err != nil && err != goovn.ErrorNotFound && err != goovn.ErrorSchema {
-		return fmt.Errorf("unable to get the lsp: %s from the nbdb: %s", portName, err)
-	}
-
-	if lsp == nil {
-		cmd, err = oc.ovnNBClient.LSPAdd(logicalSwitch, portName)
-		if err != nil {
-			return fmt.Errorf("unable to create the LSPAdd command for port: %s from the nbdb", portName)
-		}
-		cmds = append(cmds, cmd)
-	}
-
-	annotation, err := util.UnmarshalPodAnnotation(pod.Annotations)
-
-	// the IPs we allocate in this function need to be released back to the
-	// IPAM pool if there is some error in any step of addLogicalPort past
-	// the point the IPs were assigned via the IPAM manager.
-	// this needs to be done only when releaseIPs is set to true (the case where
-	// we truly have assigned podIPs in this call) AND when there is no error in
-	// the rest of the functionality of addLogicalPort. It is important to use a
-	// named return variable for defer to work correctly.
-
-	defer func() {
-		if releaseIPs && err != nil {
-			if relErr := oc.lsManager.ReleaseIPs(logicalSwitch, podIfAddrs); relErr != nil {
-				klog.Errorf("Error when releasing IPs for node: %s, err: %q",
-					logicalSwitch, relErr)
-			} else {
-				klog.V(5).Infof("Released IPs: %s for node: %s", util.JoinIPNetIPs(podIfAddrs, " "), logicalSwitch)
-			}
-		}
-	}()
-
+	// if portName is already in the cache, the Pod logical switch port is already created with IP addresses allocated
+	portInfo, err := oc.logicalPortCache.get(portName)
 	if err == nil {
-		podMac = annotation.MAC
-		podIfAddrs = annotation.IPs
-
-		// If the pod already has annotations use the existing static
-		// IP/MAC from the annotation.
-		cmd, err = oc.ovnNBClient.LSPSetDynamicAddresses(portName, "")
-		if err != nil {
-			return fmt.Errorf("unable to create LSPSetDynamicAddresses command for port: %s", portName)
-		}
-		cmds = append(cmds, cmd)
+		podIfAddrs = portInfo.ips
+		podMac = portInfo.mac
 	} else {
-		podMac, podIfAddrs, err = oc.getPortAddresses(logicalSwitch, portName)
-		if err != nil {
-			return fmt.Errorf("failed to get pod addresses for pod %s on node: %s, err: %v",
-				portName, logicalSwitch, err)
+		// If the pod does not exist in the cache, it is either:
+		// 	- ovnkube-master restarts and the POD annotation is already created (Pod logical switch port
+		// 	  may or may not exists, but IPs are already reserved)
+		//  - Both Pod annotation and logical switch port do not exist, IPs are not allocated either.
+
+		// Check if the pod's logical switch port already exists. If it
+		// does don't re-add the port to OVN as this will change its
+		// UUID and and the port cache, address sets, and port groups
+		// will still have the old UUID.
+		lsp, err := oc.ovnNBClient.LSPGet(portName)
+		if err != nil && err != goovn.ErrorNotFound && err != goovn.ErrorSchema {
+			return fmt.Errorf("unable to get the lsp: %s from the nbdb: %s", portName, err)
 		}
-		if podMac == nil || podIfAddrs == nil {
+
+		if lsp == nil {
+			cmd, err = oc.ovnNBClient.LSPAdd(logicalSwitch, portName)
+			if err != nil {
+				return fmt.Errorf("unable to create the LSPAdd command for port: %s from the nbdb", portName)
+			}
+			cmds = append(cmds, cmd)
+		}
+
+		if annotation != nil {
+			// if Pod annoation already exists, its IPs should already be reserved in syncPods()
+			podMac = annotation.MAC
+			podIfAddrs = annotation.IPs
+
+			// If the pod already has annotations use the existing static
+			// IP/MAC from the annotation.
+			cmd, err = oc.ovnNBClient.LSPSetDynamicAddresses(portName, "")
+			if err != nil {
+				return fmt.Errorf("unable to create LSPSetDynamicAddresses command for port: %s", portName)
+			}
+			cmds = append(cmds, cmd)
+		} else {
 			podMac, podIfAddrs, err = oc.assignPodAddresses(logicalSwitch)
 			if err != nil {
 				return fmt.Errorf("failed to assign pod addresses for pod %s on node: %s, err: %v",
 					portName, logicalSwitch, err)
 			}
-			releaseIPs = true
-		} else {
-			if len(podIfAddrs) > 0 {
-				if err = oc.lsManager.AllocateIPs(logicalSwitch, podIfAddrs); err != nil {
-					klog.Errorf("Failed to block off already allocated IPs: %s for pod %s on node: %s"+
-						" error: %v", util.JoinIPNetIPs(podIfAddrs, " "), portName,
-						logicalSwitch, err)
-					return fmt.Errorf("failed to block off already allocated IPs %s: for node: %s, error: %v",
-						util.JoinIPNetIPs(podIfAddrs, " "), logicalSwitch, err)
+
+			// Once the pod is added to the port cache, do not release its IPs.
+			defer func(nodeName string) {
+				if !podAddedInCache {
+					if relErr := oc.lsManager.ReleaseIPs(nodeName, podIfAddrs); relErr != nil {
+						klog.Errorf("Error when releasing IPs for node: %s, err: %q",
+							nodeName, relErr)
+					} else {
+						klog.V(5).Infof("Released IPs: %s for node: %s", util.JoinIPNetIPs(podIfAddrs, " "), nodeName)
+					}
+				}
+			}(logicalSwitch)
+
+			var networks []*types.NetworkSelectionElement
+
+			networks, err = util.GetPodNetSelAnnotation(pod, util.DefNetworkAnnotation)
+			// handle error cases separately first to ensure binding to err, otherwise the
+			// defer will fail
+			if err != nil {
+				return fmt.Errorf("error while getting custom MAC config for port %q from "+
+					"default-network's network-attachment: %v", portName, err)
+			} else if networks != nil && len(networks) != 1 {
+				err = fmt.Errorf("invalid network annotation size while getting custom MAC config"+
+					" for port %q", portName)
+				return err
+			}
+
+			if networks != nil && networks[0].MacRequest != "" {
+				klog.V(5).Infof("Pod %s/%s requested custom MAC: %s", pod.Namespace, pod.Name, networks[0].MacRequest)
+				podMac, err = net.ParseMAC(networks[0].MacRequest)
+				if err != nil {
+					return fmt.Errorf("failed to parse mac %s requested in annotation for pod %s: Error %v",
+						networks[0].MacRequest, pod.Name, err)
 				}
 			}
 		}
 
-		var networks []*types.NetworkSelectionElement
-
-		networks, err = util.GetPodNetSelAnnotation(pod, util.DefNetworkAnnotation)
-		// handle error cases separately first to ensure binding to err, otherwise the
-		// defer will fail
+		// set addresses on the port
+		addresses = make([]string, len(podIfAddrs)+1)
+		addresses[0] = podMac.String()
+		for idx, podIfAddr := range podIfAddrs {
+			addresses[idx+1] = podIfAddr.IP.String()
+		}
+		cmd, err = oc.ovnNBClient.LSPSetAddress(portName, addresses...)
 		if err != nil {
-			return fmt.Errorf("error while getting custom MAC config for port %q from "+
-				"default-network's network-attachment: %v", portName, err)
-		} else if networks != nil && len(networks) != 1 {
-			err = fmt.Errorf("invalid network annotation size while getting custom MAC config"+
-				" for port %q", portName)
-			return err
+			return fmt.Errorf("unable to create LSPSetAddress command for port: %s", portName)
+		}
+		cmds = append(cmds, cmd)
+
+		// add external ids
+		extIds := map[string]string{"namespace": pod.Namespace, "pod": "true"}
+		cmd, err = oc.ovnNBClient.LSPSetExternalIds(portName, extIds)
+		if err != nil {
+			return fmt.Errorf("unable to create LSPSetAddress command for port: %s", portName)
+		}
+		cmds = append(cmds, cmd)
+
+		// add port security addresses
+		cmd, err = oc.ovnNBClient.LSPSetPortSecurity(portName, addresses...)
+		if err != nil {
+			return fmt.Errorf("unable to create LSPSetPortSecurity command for port: %s", portName)
+		}
+		cmds = append(cmds, cmd)
+
+		// execute all the commands together.
+		err = oc.ovnNBClient.Execute(cmds...)
+		if err != nil {
+			return fmt.Errorf("error while creating logical port %s error: %v",
+				portName, err)
 		}
 
-		if networks != nil && networks[0].MacRequest != "" {
-			klog.V(5).Infof("Pod %s/%s requested custom MAC: %s", pod.Namespace, pod.Name, networks[0].MacRequest)
-			podMac, err = net.ParseMAC(networks[0].MacRequest)
-			if err != nil {
-				return fmt.Errorf("failed to parse mac %s requested in annotation for pod %s: Error %v",
-					networks[0].MacRequest, pod.Name, err)
+		// if pod failed to be added to the cache, and the Pod IPs are newly allocated, delete the Pod's
+		// logical switch port (Its IPs will also be released. See defer function above)
+		defer func() {
+			if !podAddedInCache && annotation == nil {
+				cmd, err = oc.ovnNBClient.LSPDel(portName)
+				if err != nil {
+					klog.Errorf("Unable to create the LSPDel command for port: %s from the nbdb", portName)
+					return
+				}
+				err = oc.ovnNBClient.Execute(cmd)
+				if err != nil {
+					klog.Errorf("Error while deleting logical port %s error: %v", portName, err)
+				}
 			}
+		}()
+
+		lsp, err = oc.ovnNBClient.LSPGet(portName)
+		if err != nil || lsp == nil {
+			return fmt.Errorf("failed to get the logical switch port: %s from the ovn client, error: %s", portName, err)
 		}
 
+		// Add the pod's logical switch port to the port cache
+		portInfo = oc.logicalPortCache.add(logicalSwitch, portName, lsp.UUID, podMac, podIfAddrs)
+		podAddedInCache = true
 	}
-
-	// set addresses on the port
-	addresses = make([]string, len(podIfAddrs)+1)
-	addresses[0] = podMac.String()
-	for idx, podIfAddr := range podIfAddrs {
-		addresses[idx+1] = podIfAddr.IP.String()
-	}
-	cmd, err = oc.ovnNBClient.LSPSetAddress(portName, addresses...)
-	if err != nil {
-		return fmt.Errorf("unable to create LSPSetAddress command for port: %s", portName)
-	}
-	cmds = append(cmds, cmd)
-
-	// add external ids
-	extIds := map[string]string{"namespace": pod.Namespace, "pod": "true"}
-	cmd, err = oc.ovnNBClient.LSPSetExternalIds(portName, extIds)
-	if err != nil {
-		return fmt.Errorf("unable to create LSPSetAddress command for port: %s", portName)
-	}
-	cmds = append(cmds, cmd)
-
-	// add port security addresses
-	cmd, err = oc.ovnNBClient.LSPSetPortSecurity(portName, addresses...)
-	if err != nil {
-		return fmt.Errorf("unable to create LSPSetPortSecurity command for port: %s", portName)
-	}
-	cmds = append(cmds, cmd)
-
-	// execute all the commands together.
-	err = oc.ovnNBClient.Execute(cmds...)
-	if err != nil {
-		return fmt.Errorf("error while creating logical port %s error: %v",
-			portName, err)
-	}
-
-	lsp, err = oc.ovnNBClient.LSPGet(portName)
-	if err != nil || lsp == nil {
-		return fmt.Errorf("failed to get the logical switch port: %s from the ovn client, error: %s", portName, err)
-	}
-
-	// Add the pod's logical switch port to the port cache
-	portInfo := oc.logicalPortCache.add(logicalSwitch, portName, lsp.UUID, podMac, podIfAddrs)
 
 	// Enforce the default deny multicast policy
 	if oc.multicastSupport {
@@ -442,35 +465,4 @@ func (oc *Controller) assignPodAddresses(nodeName string) (net.HardwareAddr, []*
 		podMAC = util.IPAddrToHWAddr(podCIDRs[0].IP)
 	}
 	return podMAC, podCIDRs, nil
-}
-
-// Given a pod and the node on which it is scheduled, get all addresses currently assigned
-// to it from the nbdb.
-func (oc *Controller) getPortAddresses(nodeName, portName string) (net.HardwareAddr, []*net.IPNet, error) {
-	podMac, podIPs, err := util.GetPortAddresses(portName, oc.ovnNBClient)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if podMac == nil || len(podIPs) == 0 {
-		return nil, nil, nil
-	}
-
-	var podIPNets []*net.IPNet
-
-	nodeSubnets := oc.lsManager.GetSwitchSubnets(nodeName)
-
-	for _, ip := range podIPs {
-		for _, subnet := range nodeSubnets {
-			if subnet.Contains(ip) {
-				podIPNets = append(podIPNets,
-					&net.IPNet{
-						IP:   ip,
-						Mask: subnet.Mask,
-					})
-				break
-			}
-		}
-	}
-	return podMac, podIPNets, nil
 }
