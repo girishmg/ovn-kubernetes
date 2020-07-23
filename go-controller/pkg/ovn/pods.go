@@ -10,9 +10,12 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/ipallocator"
 	util "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	kapi "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes/scheme"
+	ref "k8s.io/client-go/tools/reference"
 	"k8s.io/klog"
 	utilnet "k8s.io/utils/net"
 )
@@ -281,6 +284,16 @@ func (oc *Controller) addLogicalPort(pod *kapi.Pod) error {
 		if podMac == nil || podIfAddrs == nil {
 			podMac, podIfAddrs, err = oc.assignPodAddresses(logicalSwitch)
 			if err != nil {
+				if err == ipallocator.ErrFull {
+					podRef, err := ref.GetReference(scheme.Scheme, pod)
+					if err != nil {
+						klog.Errorf("Couldn't make a ref to pod %s/%s: '%v'", pod.Namespace, pod.Name, err)
+					} else {
+						klog.V(5).Infof("Sending a IPRangeFull event for Pod %s in namespace %s.", pod.Name, pod.Namespace)
+						oc.recorder.Eventf(podRef, kapi.EventTypeWarning, "IPRangeFull",
+							"No IP address available for pod %s/%s", pod.Namespace, pod.Name)
+					}
+				}
 				return fmt.Errorf("failed to assign pod addresses for pod %s on node: %s, err: %v",
 					portName, logicalSwitch, err)
 			}
