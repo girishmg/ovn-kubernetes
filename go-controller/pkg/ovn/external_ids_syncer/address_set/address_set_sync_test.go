@@ -2,11 +2,12 @@ package address_set
 
 import (
 	"fmt"
-	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 	"strings"
 
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	"github.com/onsi/ginkgo"
+	"github.com/onsi/gomega"
+
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -402,6 +403,7 @@ var _ = ginkgo.Describe("OVN Address Set Syncer", func() {
 			false,
 			map[string]string{egressFirewallACLExtIdKey: "egressfirewall1"},
 			nil,
+			types.PlaceHolderACLTier,
 		)
 		acl.UUID = "acl-UUID"
 		initialDb := []libovsdbtest.TestData{acl}
@@ -437,6 +439,7 @@ var _ = ginkgo.Describe("OVN Address Set Syncer", func() {
 			map[string]string{
 				"apply-after-lb": "true",
 			},
+			types.PlaceHolderACLTier,
 		)
 		acl1.UUID = "acl1-UUID"
 		acl2 := libovsdbops.BuildACL(
@@ -450,6 +453,7 @@ var _ = ginkgo.Describe("OVN Address Set Syncer", func() {
 			false,
 			nil,
 			nil,
+			types.PlaceHolderACLTier,
 		)
 		acl2.UUID = "acl2-UUID"
 		initialDb := []libovsdbtest.TestData{acl1, acl2}
@@ -478,6 +482,7 @@ var _ = ginkgo.Describe("OVN Address Set Syncer", func() {
 			false,
 			map[string]string{egressFirewallACLExtIdKey: "egressfirewall1"},
 			nil,
+			types.PlaceHolderACLTier,
 		)
 		acl.UUID = "acl-UUID"
 		initialDb := []libovsdbtest.TestData{

@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strings"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -11,8 +14,6 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
-	"net"
-	"strings"
 
 	mnpapi "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/apis/k8s.cni.cncf.io/v1beta1"
 	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
@@ -29,10 +30,10 @@ func getNetCIDRSubnet(netCIDR string) (string, error) {
 	} else if len(subStrings) == 2 {
 		return netCIDR, nil
 	}
-	return "", fmt.Errorf("invalid network cidr %s", netCIDR)
+	return "", fmt.Errorf("invalid network cidr: %q", netCIDR)
 }
 
-type networkAttachmentConfig struct {
+type networkAttachmentConfigParams struct {
 	cidr         string
 	excludeCIDRs []string
 	namespace    string
@@ -42,11 +43,18 @@ type networkAttachmentConfig struct {
 	vlanID       int
 }
 
-func (nac networkAttachmentConfig) attachmentName() string {
-	if nac.networkName != "" {
-		return nac.networkName
+type networkAttachmentConfig struct {
+	networkAttachmentConfigParams
+}
+
+func newNetworkAttachmentConfig(params networkAttachmentConfigParams) networkAttachmentConfig {
+	networkAttachmentConfig := networkAttachmentConfig{
+		networkAttachmentConfigParams: params,
 	}
-	return uniqueNadName(nac.name)
+	if networkAttachmentConfig.networkName == "" {
+		networkAttachmentConfig.networkName = uniqueNadName(networkAttachmentConfig.name)
+	}
+	return networkAttachmentConfig
 }
 
 func uniqueNadName(originalNetName string) string {
@@ -69,7 +77,7 @@ func generateNAD(config networkAttachmentConfig) *nadapi.NetworkAttachmentDefini
         "vlanID": %d
 }
 `,
-		config.attachmentName(),
+		config.networkName,
 		config.topology,
 		config.cidr,
 		strings.Join(config.excludeCIDRs, ","),
@@ -181,13 +189,15 @@ func connectToServer(clientPodConfig podConfiguration, serverIP string, port int
 }
 
 func newAttachmentConfigWithOverriddenName(name, namespace, networkName, topology, cidr string) networkAttachmentConfig {
-	return networkAttachmentConfig{
-		cidr:        cidr,
-		name:        name,
-		namespace:   namespace,
-		networkName: networkName,
-		topology:    topology,
-	}
+	return newNetworkAttachmentConfig(
+		networkAttachmentConfigParams{
+			cidr:        cidr,
+			name:        name,
+			namespace:   namespace,
+			networkName: networkName,
+			topology:    topology,
+		},
+	)
 }
 
 func configurePodStaticIP(podNamespace string, podName string, staticIP string) error {

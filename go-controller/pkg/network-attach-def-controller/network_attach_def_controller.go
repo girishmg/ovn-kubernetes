@@ -88,7 +88,7 @@ type NetAttachDefinitionController struct {
 	// key is nadName, value is BasicNetInfo
 	perNADNetInfo *syncmap.SyncMap[util.BasicNetInfo]
 	// controller for all networks, key is netName of net-attach-def, value is networkNADInfo
-	// this map is updated either at the very beginning of network controller manager when initializing the
+	// this map is updated either at the very beginning of ovnkube controller when initializing the
 	// default controller or when net-attach-def is added/deleted. All these are serialized by syncmap lock
 	perNetworkNADInfo *syncmap.SyncMap[*networkNADInfo]
 }
@@ -141,7 +141,7 @@ func (nadController *NetAttachDefinitionController) Start() error {
 
 func (nadController *NetAttachDefinitionController) start() error {
 	nadController.nadFactory.Start(nadController.stopChan)
-	if !cache.WaitForNamedCacheSync(nadController.name, nadController.stopChan, nadController.netAttachDefSynced) {
+	if !util.WaitForNamedCacheSyncWithTimeout(nadController.name, nadController.stopChan, nadController.netAttachDefSynced) {
 		return fmt.Errorf("stop requested while syncing caches")
 	}
 
@@ -150,7 +150,7 @@ func (nadController *NetAttachDefinitionController) start() error {
 		return fmt.Errorf("failed to sync all existing NAD entries: %v", err)
 	}
 
-	klog.Info("Starting workers for %s NAD controller", nadController.name)
+	klog.Infof("Starting workers for %s NAD controller", nadController.name)
 	for i := 0; i < numberOfWorkers; i++ {
 		nadController.wg.Add(1)
 		go func() {

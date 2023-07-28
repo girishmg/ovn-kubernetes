@@ -9,7 +9,8 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	egressfirewallapi "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
+	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -100,7 +101,7 @@ func (oc *DefaultNetworkController) newEgressFirewallRule(rawEgressFirewallRule 
 		if err != nil {
 			return nil, fmt.Errorf("rule destination has invalid node selector, err: %v", err)
 		}
-		nodes, err := oc.watchFactory.GetNodesBySelector(*rawEgressFirewallRule.To.NodeSelector)
+		nodes, err := oc.watchFactory.GetNodesByLabelSelector(*rawEgressFirewallRule.To.NodeSelector)
 		if err != nil {
 			return efr, fmt.Errorf("unable to query nodes for egress firewall: %w", err)
 		}
@@ -201,10 +202,12 @@ func (oc *DefaultNetworkController) addEgressFirewall(egressFirewall *egressfire
 	ef := cloneEgressFirewall(egressFirewall)
 	ef.Lock()
 	defer ef.Unlock()
-	// there should not be an item already in egressFirewall map for the given Namespace
+	// egressFirewall may already exist, if previous add failed, cleanup
 	if _, loaded := oc.egressFirewalls.Load(egressFirewall.Namespace); loaded {
-		return fmt.Errorf("error attempting to add egressFirewall %s to namespace %s when it already has an egressFirewall",
-			egressFirewall.Name, egressFirewall.Namespace)
+		err := oc.deleteEgressFirewall(egressFirewall)
+		if err != nil {
+			return fmt.Errorf("failed to cleanup existing egress firewall %s on add: %v", egressFirewall.Namespace, err)
+		}
 	}
 
 	var errorList []error
@@ -238,10 +241,12 @@ func (oc *DefaultNetworkController) addEgressFirewall(egressFirewall *egressfire
 	}
 	ipv4HashedAS, ipv6HashedAS := as.GetASHashNames()
 	aclLoggingLevels := oc.GetNamespaceACLLogging(ef.namespace)
+	// store egress firewall before calling addEgressFirewallRules, since it doesn't have a cleanup, and oc.egressFirewalls
+	// object will be used on retry to cleanup
+	oc.egressFirewalls.Store(egressFirewall.Namespace, ef)
 	if err := oc.addEgressFirewallRules(ef, ipv4HashedAS, ipv6HashedAS, aclLoggingLevels); err != nil {
 		return err
 	}
-	oc.egressFirewalls.Store(egressFirewall.Namespace, ef)
 	return nil
 }
 
@@ -250,8 +255,7 @@ func (oc *DefaultNetworkController) deleteEgressFirewall(egressFirewallObj *egre
 	deleteDNS := false
 	obj, loaded := oc.egressFirewalls.Load(egressFirewallObj.Namespace)
 	if !loaded {
-		return fmt.Errorf("there is no egressFirewall found in namespace %s",
-			egressFirewallObj.Namespace)
+		return nil
 	}
 
 	ef, ok := obj.(*egressFirewall)
@@ -282,19 +286,25 @@ func (oc *DefaultNetworkController) deleteEgressFirewall(egressFirewallObj *egre
 	return nil
 }
 
-func (oc *DefaultNetworkController) updateEgressFirewallStatusWithRetry(egressfirewall *egressfirewallapi.EgressFirewall) error {
+func (oc *DefaultNetworkController) updateEgressFirewallStatusWithRetry(egressFirewall *egressfirewallapi.EgressFirewall) error {
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		return oc.kube.UpdateEgressFirewall(egressfirewall)
+		ef, err := oc.watchFactory.GetEgressFirewall(egressFirewall.Namespace, egressFirewall.Name)
+		if err != nil {
+			return err
+		}
+		c := ef.DeepCopy()
+		c.Status.Status = egressFirewall.Status.Status
+		return oc.kube.UpdateEgressFirewall(c)
 	})
 	if retryErr != nil {
 		return fmt.Errorf("error in updating status on EgressFirewall %s/%s: %v",
-			egressfirewall.Namespace, egressfirewall.Name, retryErr)
+			egressFirewall.Namespace, egressFirewall.Name, retryErr)
 	}
 	return nil
 }
 
 func (oc *DefaultNetworkController) addEgressFirewallRules(ef *egressFirewall, hashedAddressSetNameIPv4,
-	hashedAddressSetNameIPv6 string, aclLogging *ACLLoggingLevels, ruleIDs ...int) error {
+	hashedAddressSetNameIPv6 string, aclLogging *libovsdbutil.ACLLoggingLevels, ruleIDs ...int) error {
 	for _, rule := range ef.egressRules {
 		// check if only specific rule ids are requested to be added
 		if len(ruleIDs) > 0 {
@@ -365,17 +375,17 @@ func (oc *DefaultNetworkController) addEgressFirewallRules(ef *egressFirewall, h
 
 // createEgressFirewallRules uses the previously generated elements and creates the
 // acls for all node switches
-func (oc *DefaultNetworkController) createEgressFirewallRules(ruleIdx int, match, action, namespace string, aclLogging *ACLLoggingLevels) error {
+func (oc *DefaultNetworkController) createEgressFirewallRules(ruleIdx int, match, action, namespace string, aclLogging *libovsdbutil.ACLLoggingLevels) error {
 	aclIDs := oc.getEgressFirewallACLDbIDs(namespace, ruleIdx)
 	priority := types.EgressFirewallStartPriority - ruleIdx
-	egressFirewallACL := BuildACL(
+	egressFirewallACL := libovsdbutil.BuildACL(
 		aclIDs,
 		priority,
 		match,
 		action,
 		aclLogging,
 		// since egressFirewall has direction to-lport, set type to ingress
-		lportIngress,
+		libovsdbutil.LportIngress,
 	)
 	ops, err := libovsdbops.CreateOrUpdateACLsOps(oc.nbClient, nil, egressFirewallACL)
 	if err != nil {
@@ -663,7 +673,7 @@ func (oc *DefaultNetworkController) updateACLLoggingForEgressFirewall(egressFire
 			libovsdbops.ObjectNameKey: ef.namespace,
 		})
 	p := libovsdbops.GetPredicate[*nbdb.ACL](predicateIDs, nil)
-	if err := UpdateACLLoggingWithPredicate(oc.nbClient, p, &nsInfo.aclLogging); err != nil {
+	if err := libovsdbutil.UpdateACLLoggingWithPredicate(oc.nbClient, p, &nsInfo.aclLogging); err != nil {
 		return false, fmt.Errorf("unable to update ACL logging in ns %s, err: %v", ef.namespace, err)
 	}
 	return true, nil

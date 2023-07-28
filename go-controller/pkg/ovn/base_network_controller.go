@@ -11,14 +11,19 @@ import (
 
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/ovsdb"
+
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/allocator/pod"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
+	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
+	zoneic "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/zone_interconnect"
 	ovnretry "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -96,6 +101,9 @@ type BaseNetworkController struct {
 	// A cache of all logical switches seen by the watcher and their subnets
 	lsManager *lsm.LogicalSwitchManager
 
+	// An utility to allocate the PodAnnotation to pods
+	podAnnotationAllocator *pod.PodAnnotationAllocator
+
 	// A cache of all logical ports known to the controller
 	logicalPortCache *portCache
 
@@ -134,10 +142,20 @@ type BaseNetworkController struct {
 	// waitGroup per-Controller
 	wg *sync.WaitGroup
 
+	// some downstream components need to stop on their own or when the network
+	// controller is stopped
+	// use a chain of cancelable contexts for this
+	cancelableCtx util.CancelableContext
+
 	// List of nodes which belong to the local zone (stored as a sync map)
 	// If the map is nil, it means the controller is not tracking the node events
 	// and all the nodes are considered as local zone nodes.
 	localZoneNodes *sync.Map
+
+	// zoneICHandler creates the interconnect resources for local nodes and remote nodes.
+	// Interconnect resources are Transit switch and logical ports connecting this transit switch
+	// to the cluster router. Please see zone_interconnect/interconnect_handler.go for more details.
+	zoneICHandler *zoneic.ZoneInterconnectHandler
 }
 
 // BaseSecondaryNetworkController structure holds per-network fields and network specific
@@ -152,7 +170,7 @@ type BaseSecondaryNetworkController struct {
 func NewCommonNetworkControllerInfo(client clientset.Interface, kube *kube.KubeOVN, wf *factory.WatchFactory,
 	recorder record.EventRecorder, nbClient libovsdbclient.Client, sbClient libovsdbclient.Client,
 	podRecorder *metrics.PodRecorder, SCTPSupport, multicastSupport, svcTemplateSupport bool) (*CommonNetworkControllerInfo, error) {
-	zone, err := util.GetNBZone(nbClient)
+	zone, err := libovsdbutil.GetNBZone(nbClient)
 	if err != nil {
 		return nil, fmt.Errorf("error getting NB zone name : err - %w", err)
 	}
@@ -369,7 +387,10 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 		Name:      types.SwitchToRouterPrefix + switchName,
 		Type:      "router",
 		Addresses: []string{"router"},
-		Options:   map[string]string{"router-port": types.RouterToSwitchPrefix + switchName},
+		Options: map[string]string{
+			"router-port": types.RouterToSwitchPrefix + switchName,
+			"arp_proxy":   kubevirt.ComposeARPProxyLSPOption(),
+		},
 	}
 	sw := nbdb.LogicalSwitch{Name: switchName}
 	err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(bnc.nbClient, &sw, &logicalSwitchPort)
@@ -387,7 +408,7 @@ func (bnc *BaseNetworkController) createNodeLogicalSwitch(nodeName string, hostS
 	}
 
 	// Add the switch to the logical switch cache
-	return bnc.lsManager.AddSwitch(logicalSwitch.Name, logicalSwitch.UUID, hostSubnets)
+	return bnc.lsManager.AddOrUpdateSwitch(logicalSwitch.Name, hostSubnets)
 }
 
 // UpdateNodeAnnotationWithRetry update node's annotation with the given node annotations.
@@ -432,7 +453,7 @@ func (bnc *BaseNetworkController) deleteNodeLogicalNetwork(nodeName string) erro
 	}
 	err = libovsdbops.DeleteLogicalRouterPorts(bnc.nbClient, &logicalRouter, &logicalRouterPort)
 	if err != nil {
-		return fmt.Errorf("failed to delete router port %s: %v", logicalRouterPort.Name, err)
+		return fmt.Errorf("failed to delete router port %s: %w", logicalRouterPort.Name, err)
 	}
 
 	return nil
@@ -694,7 +715,7 @@ func (bnc *BaseNetworkController) recordNodeErrorEvent(node *kapi.Node, nodeErr 
 }
 
 func (bnc *BaseNetworkController) doesNetworkRequireIPAM() bool {
-	return !((bnc.TopologyType() == types.Layer2Topology || bnc.TopologyType() == types.LocalnetTopology) && len(bnc.Subnets()) == 0)
+	return util.DoesNetworkRequireIPAM(bnc.NetInfo)
 }
 
 func (bnc *BaseNetworkController) buildPortGroup(hashName, name string, ports []*nbdb.LogicalSwitchPort, acls []*nbdb.ACL) *nbdb.PortGroup {
@@ -709,29 +730,15 @@ func (bnc *BaseNetworkController) getPodNADNames(pod *kapi.Pod) []string {
 	if !bnc.IsSecondary() {
 		return []string{types.DefaultNetworkName}
 	}
-	on, networkMap, err := util.GetPodNADToNetworkMapping(pod, bnc.NetInfo)
-	// skip pods that are not on this network
-	if err != nil || !on {
-		if err != nil {
-			// if we are not able to determine if this pod is on this network continue processing the
-			// remaining pods anyway, hopefully the pod will be handled in a future pod update event.
-			klog.Warningf("Failed to determine if pod %s/%s is on network %s: %v",
-				pod.Namespace, pod.Name, bnc.GetNetworkName(), err)
-		}
-		return []string{}
-	}
-	nadNames := make([]string, 0, len(networkMap))
-	for nadName := range networkMap {
-		nadNames = append(nadNames, nadName)
-	}
-	return nadNames
+	podNadNames, _ := util.PodNadNames(pod, bnc.NetInfo)
+	return podNadNames
 }
 
 // getClusterPortGroupName gets network scoped port group hash name; base is either
 // ClusterPortGroupNameBase or ClusterRtrPortGroupNameBase.
 func (bnc *BaseNetworkController) getClusterPortGroupName(base string) string {
 	if bnc.IsSecondary() {
-		return hashedPortGroup(bnc.GetNetworkName()) + "_" + base
+		return libovsdbutil.HashedPortGroup(bnc.GetNetworkName()) + "_" + base
 	}
 	return base
 }
@@ -758,5 +765,43 @@ func (bnc *BaseNetworkController) GetLocalZoneNodes() ([]*kapi.Node, error) {
 
 // isLocalZoneNode returns true if the node is part of the local zone.
 func (bnc *BaseNetworkController) isLocalZoneNode(node *kapi.Node) bool {
+	/** HACK BEGIN **/
+	// TODO(tssurya): Remove this HACK a few months from now. This has been added only to
+	// minimize disruption for upgrades when moving to interconnect=true.
+	// We want the legacy ovnkube-master to wait for remote ovnkube-node to
+	// signal it using "k8s.ovn.org/remote-zone-migrated" annotation before
+	// considering a node as remote when we upgrade from "global" (1 zone IC)
+	// zone to multi-zone. This is so that network disruption for the existing workloads
+	// is negligible and until the point where ovnkube-node flips the switch to connect
+	// to the new SBDB, it would continue talking to the legacy RAFT ovnkube-sbdb to ensure
+	// OVN/OVS flows are intact.
+	if bnc.zone == types.OvnDefaultZone {
+		return !util.HasNodeMigratedZone(node)
+	}
+	/** HACK END **/
 	return util.GetNodeZone(node) == bnc.zone
+}
+
+func (bnc *BaseNetworkController) isLayer2Interconnect() bool {
+	return config.OVNKubernetesFeature.EnableInterconnect && bnc.NetInfo.TopologyType() == types.Layer2Topology
+}
+
+func (bnc *BaseNetworkController) nodeZoneClusterChanged(oldNode, newNode *kapi.Node, newNodeIsLocalZone bool) bool {
+	// Check if the annotations have changed. Use network topology and local params to skip unecessary checks
+
+	// NodeIDAnnotationChanged and NodeTransitSwitchPortAddrAnnotationChanged affects local and remote nodes
+	if util.NodeIDAnnotationChanged(oldNode, newNode) {
+		return true
+	}
+
+	if util.NodeTransitSwitchPortAddrAnnotationChanged(oldNode, newNode) {
+		return true
+	}
+
+	// NodeGatewayRouterLRPAddrAnnotationChanged would not affect local, nor layer3 secondary network
+	if !newNodeIsLocalZone && !bnc.IsSecondary() && util.NodeGatewayRouterLRPAddrAnnotationChanged(oldNode, newNode) {
+		return true
+	}
+
+	return false
 }

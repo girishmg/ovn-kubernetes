@@ -11,7 +11,7 @@ import (
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -70,7 +70,10 @@ func (bsnc *BaseSecondaryNetworkController) AddSecondaryNetworkResourceCommon(ob
 			return nil
 		}
 
-		np := convertMultiNetPolicyToNetPolicy(mp)
+		np, err := bsnc.convertMultiNetPolicyToNetPolicy(mp)
+		if err != nil {
+			return err
+		}
 		if err := bsnc.addNetworkPolicy(np); err != nil {
 			klog.Infof("MultiNetworkPolicy add failed for %s/%s, will try again later: %v",
 				mp.Namespace, mp.Name, err)
@@ -114,7 +117,10 @@ func (bsnc *BaseSecondaryNetworkController) UpdateSecondaryNetworkResourceCommon
 		newShouldApply := bsnc.shouldApplyMultiPolicy(newMp)
 		if oldShouldApply {
 			// this multi-netpol no longer applies to this network controller, delete it
-			np := convertMultiNetPolicyToNetPolicy(oldMp)
+			np, err := bsnc.convertMultiNetPolicyToNetPolicy(oldMp)
+			if err != nil {
+				return err
+			}
 			if err := bsnc.deleteNetworkPolicy(np); err != nil {
 				klog.Infof("MultiNetworkPolicy delete failed for %s/%s, will try again later: %v",
 					oldMp.Namespace, oldMp.Name, err)
@@ -123,7 +129,10 @@ func (bsnc *BaseSecondaryNetworkController) UpdateSecondaryNetworkResourceCommon
 		}
 		if newShouldApply {
 			// now this multi-netpol applies to this network controller
-			np := convertMultiNetPolicyToNetPolicy(newMp)
+			np, err := bsnc.convertMultiNetPolicyToNetPolicy(newMp)
+			if err != nil {
+				return err
+			}
 			if err := bsnc.addNetworkPolicy(np); err != nil {
 				klog.Infof("MultiNetworkPolicy add failed for %s/%s, will try again later: %v",
 					newMp.Namespace, newMp.Name, err)
@@ -161,7 +170,10 @@ func (bsnc *BaseSecondaryNetworkController) DeleteSecondaryNetworkResourceCommon
 		if !ok {
 			return fmt.Errorf("could not cast %T object to *multinetworkpolicyapi.MultiNetworkPolicy", obj)
 		}
-		np := convertMultiNetPolicyToNetPolicy(mp)
+		np, err := bsnc.convertMultiNetPolicyToNetPolicy(mp)
+		if err != nil {
+			return err
+		}
 		// delete this policy regardless it applies to this network controller, in case of missing update event
 		if err := bsnc.deleteNetworkPolicy(np); err != nil {
 			klog.Infof("MultiNetworkPolicy delete failed for %s/%s, will try again later: %v",
@@ -188,16 +200,6 @@ func (bsnc *BaseSecondaryNetworkController) ensurePodForSecondaryNetwork(pod *ka
 		return nil
 	}
 
-	if bsnc.isPodScheduledinLocalZone(pod) {
-		return bsnc.ensureLocalZonePodForSecondaryNetwork(pod, addPort)
-	}
-
-	return bsnc.ensureRemoteZonePodForSecondaryNetwork(pod, addPort)
-}
-
-// ensureLocalZonePodForSecondaryNetwork tries to set up secondary network for a local zone pod. It returns nil on success and error
-// on failure; failure indicates the pod set up should be retried later.
-func (bsnc *BaseSecondaryNetworkController) ensureLocalZonePodForSecondaryNetwork(pod *kapi.Pod, addPort bool) error {
 	// If a node does not have an assigned hostsubnet don't wait for the logical switch to appear
 	switchName, err := bsnc.getExpectedSwitchName(pod)
 	if err != nil {
@@ -227,49 +229,13 @@ func (bsnc *BaseSecondaryNetworkController) ensureLocalZonePodForSecondaryNetwor
 
 	var errs []error
 	for nadName, network := range networkMap {
-		if _, err = bsnc.logicalPortCache.get(pod, nadName); err == nil {
-			// logical switch port of this specific NAD has already been set up for this Pod
-			continue
-		}
 		if err = bsnc.addLogicalPortToNetworkForNAD(pod, nadName, switchName, network); err != nil {
-			errs = append(errs, fmt.Errorf("failed to add logical port of Pod %s/%s for NAD %s", pod.Namespace, pod.Name, nadName))
+			errs = append(errs, fmt.Errorf("failed to add logical port of Pod %s/%s for NAD %s: %w", pod.Namespace, pod.Name, nadName, err))
 		}
 	}
 	if len(errs) != 0 {
 		return kerrors.NewAggregate(errs)
 	}
-	return nil
-}
-
-// ensureRemoteZonePodForSecondaryNetwork tries to set up remote zone pod bits required to interconnect it.
-//   - Adds the remote pod ips to the pod namespace address set for network policy and egress gw
-//
-// It returns nil on success and error on failure; failur indicates the pod set up should be retried later.
-func (bsnc *BaseSecondaryNetworkController) ensureRemoteZonePodForSecondaryNetwork(pod *kapi.Pod, addPort bool) error {
-
-	if !bsnc.doesNetworkRequireIPAM() {
-		return nil
-	}
-
-	podIfAddrs, err := util.GetPodCIDRsWithFullMask(pod, bsnc.NetInfo)
-	if err != nil {
-		return fmt.Errorf("failed to get pod ips for the pod  %s/%s : %w", pod.Namespace, pod.Name, err)
-	}
-	if len(podIfAddrs) == 0 {
-		return nil
-	}
-
-	// Ensure the namespace/nsInfo exists
-	ops, err := bsnc.addPodToNamespaceForSecondaryNetwork(pod.Namespace, podIfAddrs)
-	if err != nil {
-		return err
-	}
-
-	_, err = libovsdbops.TransactAndCheck(bsnc.nbClient, ops)
-	if err != nil {
-		return fmt.Errorf("could not add pod IPs to the namespace address set - %w", err)
-	}
-
 	return nil
 }
 
@@ -283,9 +249,30 @@ func (bsnc *BaseSecondaryNetworkController) addLogicalPortToNetworkForNAD(pod *k
 			pod.Namespace, pod.Name, nadName, time.Since(start), libovsdbExecuteTime)
 	}()
 
-	ops, lsp, podAnnotation, newlyCreated, err := bsnc.addLogicalPortToNetwork(pod, nadName, network)
-	if err != nil {
-		return err
+	var err error
+	var podAnnotation *util.PodAnnotation
+	var ops []ovsdb.Operation
+	var lsp *nbdb.LogicalSwitchPort
+	var newlyCreated bool
+
+	// we need to create a logical port for all local pods
+	// we also need to create a remote logical port for remote pods on layer2
+	// topologies with interconnect
+	isLocalPod := bsnc.isPodScheduledinLocalZone(pod)
+	requiresLogicalPort := isLocalPod || bsnc.isLayer2Interconnect()
+
+	if requiresLogicalPort {
+		ops, lsp, podAnnotation, newlyCreated, err = bsnc.addLogicalPortToNetwork(pod, nadName, network)
+		if err != nil {
+			return err
+		}
+	}
+
+	if podAnnotation == nil {
+		podAnnotation, err = util.UnmarshalPodAnnotation(pod.Annotations, nadName)
+		if err != nil {
+			return err
+		}
 	}
 
 	if bsnc.doesNetworkRequireIPAM() && util.IsMultiNetworkPoliciesSupportEnabled() {
@@ -310,18 +297,28 @@ func (bsnc *BaseSecondaryNetworkController) addLogicalPortToNetworkForNAD(pod *k
 		return fmt.Errorf("error transacting operations %+v: %v", ops, err)
 	}
 	txOkCallBack()
-	bsnc.podRecorder.AddLSP(pod.UID, bsnc.NetInfo)
 
-	// if somehow lspUUID is empty, there is a bug here with interpreting OVSDB results
-	if len(lsp.UUID) == 0 {
-		return fmt.Errorf("UUID is empty from LSP: %+v", *lsp)
+	if lsp != nil {
+		_ = bsnc.logicalPortCache.add(pod, switchName, nadName, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
 	}
 
-	_ = bsnc.logicalPortCache.add(pod, switchName, nadName, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
-
-	if newlyCreated {
-		metrics.RecordPodCreated(pod, bsnc.NetInfo)
+	// we need to create the binding ourselves for the remote ports we create on
+	// layer2 topologies with interconnect
+	isRemotePort := !isLocalPod && bsnc.isLayer2Interconnect()
+	if isRemotePort {
+		err := bsnc.zoneICHandler.BindTransitRemotePort(pod.Spec.NodeName, lsp.Name)
+		if err != nil {
+			return fmt.Errorf("failed to bind remote transit port: %w", err)
+		}
 	}
+
+	if isLocalPod {
+		bsnc.podRecorder.AddLSP(pod.UID, bsnc.NetInfo)
+		if newlyCreated {
+			metrics.RecordPodCreated(pod, bsnc.NetInfo)
+		}
+	}
+
 	return nil
 }
 
@@ -332,19 +329,22 @@ func (bsnc *BaseSecondaryNetworkController) removePodForSecondaryNetwork(pod *ka
 		return nil
 	}
 
-	if bsnc.isPodScheduledinLocalZone(pod) {
-		return bsnc.removeLocalZonePodForSecondaryNetwork(pod, portInfoMap)
-	}
-
-	// For remote pods, we just need to remove the pod IPs from the pod namespace address set
-	return bsnc.removeRemoteZonePodFromNamespaceAddressSet(pod)
-}
-
-// removePodForSecondaryNetwork tried to tear down a local zone pod on a secondary network. It returns nil on success
-// and error on failure; failure indicates the pod tear down should be retried later.
-func (bsnc *BaseSecondaryNetworkController) removeLocalZonePodForSecondaryNetwork(pod *kapi.Pod, portInfoMap map[string]*lpInfo) error {
 	podDesc := pod.Namespace + "/" + pod.Name
 	klog.Infof("Deleting pod: %s for network %s", podDesc, bsnc.GetNetworkName())
+
+	// there is only a logical port for local pods or remote pods of layer2
+	// networks on interconnect, so only delete in these cases
+	isLocalPod := bsnc.isPodScheduledinLocalZone(pod)
+	hasLogicalPort := isLocalPod || bsnc.isLayer2Interconnect()
+
+	// otherwise just delete pod IPs from the namespace address set
+	if !hasLogicalPort {
+		if bsnc.doesNetworkRequireIPAM() && util.IsMultiNetworkPoliciesSupportEnabled() {
+			return bsnc.removeRemoteZonePodFromNamespaceAddressSet(pod)
+		}
+
+		return nil
+	}
 
 	// for a specific NAD belongs to this network, Pod's logical port might already be created half-way
 	// without its lpInfo cache being created; need to deleted resources created for that NAD as well.
@@ -361,10 +361,16 @@ func (bsnc *BaseSecondaryNetworkController) removeLocalZonePodForSecondaryNetwor
 		if !bsnc.HasNAD(nadName) {
 			continue
 		}
+
 		bsnc.logicalPortCache.remove(pod, nadName)
 		pInfo, err := bsnc.deletePodLogicalPort(pod, portInfoMap[nadName], nadName)
 		if err != nil {
 			return err
+		}
+
+		// do not release IP address if this controller does not handle IP allocation
+		if !bsnc.allocatesPodAnnotation() {
+			continue
 		}
 
 		// do not release IP address unless we have validated no other pod is using it
@@ -406,6 +412,10 @@ func (bsnc *BaseSecondaryNetworkController) syncPodsForSecondaryNetwork(pods []i
 			}
 			continue
 		}
+
+		isLocalPod := bsnc.isPodScheduledinLocalZone(pod)
+		hasRemotePort := !isLocalPod || bsnc.isLayer2Interconnect()
+
 		for nadName := range networkMap {
 			annotations, err := util.UnmarshalPodAnnotation(pod.Annotations, nadName)
 			if err != nil {
@@ -414,7 +424,10 @@ func (bsnc *BaseSecondaryNetworkController) syncPodsForSecondaryNetwork(pods []i
 				}
 				continue
 			}
-			if bsnc.doesNetworkRequireIPAM() {
+
+			if bsnc.allocatesPodAnnotation() && isLocalPod {
+				// only keep track of IPs/ports that have been allocated by this
+				// controller
 				expectedLogicalPortName, err := bsnc.allocatePodIPs(pod, annotations, nadName)
 				if err != nil {
 					return err
@@ -422,7 +435,9 @@ func (bsnc *BaseSecondaryNetworkController) syncPodsForSecondaryNetwork(pods []i
 				if expectedLogicalPortName != "" {
 					expectedLogicalPorts[expectedLogicalPortName] = true
 				}
-			} else {
+			} else if hasRemotePort {
+				// keep also track of remote ports created for layer2 on
+				// interconnect
 				expectedLogicalPorts[bsnc.GetLogicalPortName(pod, nadName)] = true
 			}
 		}
@@ -469,8 +484,7 @@ func (bsnc *BaseSecondaryNetworkController) AddNamespaceForSecondaryNetwork(ns *
 // and returns it with its mutex locked.
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 func (bsnc *BaseSecondaryNetworkController) ensureNamespaceLockedForSecondaryNetwork(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
-	ips := bsnc.getAllNamespacePodAddresses(ns)
-	return bsnc.ensureNamespaceLockedCommon(ns, readOnly, namespace, ips, bsnc.configureNamespaceCommon)
+	return bsnc.ensureNamespaceLockedCommon(ns, readOnly, namespace, bsnc.getAllNamespacePodAddresses, bsnc.configureNamespaceCommon)
 }
 
 func (bsnc *BaseSecondaryNetworkController) updateNamespaceForSecondaryNetwork(old, newer *kapi.Namespace) error {
@@ -518,12 +532,6 @@ func (bsnc *BaseSecondaryNetworkController) deleteNamespace4SecondaryNetwork(ns 
 // back the appropriate handler logic
 func (bsnc *BaseSecondaryNetworkController) WatchMultiNetworkPolicy() error {
 	if !util.IsMultiNetworkPoliciesSupportEnabled() {
-		return nil
-	}
-
-	// if this network does not have ipam, network policy is not supported.
-	if !bsnc.doesNetworkRequireIPAM() {
-		klog.Infof("Network policy is not supported on network %s", bsnc.GetNetworkName())
 		return nil
 	}
 

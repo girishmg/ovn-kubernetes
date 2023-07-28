@@ -46,8 +46,8 @@ type PodInterfaceInfo struct {
 	RoutableMTU          int    `json:"routable-mtu"`
 	Ingress              int64  `json:"ingress"`
 	Egress               int64  `json:"egress"`
-	CheckExtIDs          bool   `json:"check-external-ids"`
 	IsDPUHostMode        bool   `json:"is-dpu-host-mode"`
+	SkipIPConfig         bool   `json:"skip-ip-config"`
 	PodUID               string `json:"pod-uid"`
 	NetdevName           string `json:"vf-netdev-name"`
 	EnableUDPAggregation bool   `json:"enable-udp-aggregation"`
@@ -159,7 +159,7 @@ type PodRequest struct {
 	nadName string
 }
 
-type podRequestFunc func(request *PodRequest, clientset *ClientSet, useOVSExternalIDs bool, kubeAuth *KubeAPIAuth) ([]byte, error)
+type podRequestFunc func(request *PodRequest, clientset *ClientSet, kubeAuth *KubeAPIAuth) ([]byte, error)
 
 type PodInfoGetter interface {
 	getPod(namespace, name string) (*kapi.Pod, error)
@@ -183,7 +183,6 @@ func NewClientSet(kclient kubernetes.Interface, podLister corev1listers.PodListe
 type Server struct {
 	http.Server
 	handlePodRequestFunc podRequestFunc
-	useOVSExternalIDs    int32
 	clientSet            *ClientSet
 	kubeAuth             *KubeAPIAuth
 }

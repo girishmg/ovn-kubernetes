@@ -7,7 +7,7 @@ import (
 
 	"github.com/ovn-org/libovsdb/ovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -187,7 +187,7 @@ func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) 
 					if len(ips) > 0 {
 						if extIPs, err := getExternalIPsGR(oc.watchFactory, pod.Spec.NodeName); err != nil {
 							errors = append(errors, err)
-						} else if err = deletePodSNAT(oc.nbClient, pod.Spec.NodeName, extIPs, ips); err != nil {
+						} else if err = oc.deletePodSNAT(pod.Spec.NodeName, extIPs, ips); err != nil {
 							errors = append(errors, err)
 						}
 					}
@@ -203,9 +203,11 @@ func (oc *DefaultNetworkController) updateNamespace(old, newer *kapi.Namespace) 
 		if err != nil {
 			errors = append(errors, err)
 		} else {
-			err = oc.addExternalGWsForNamespace(gatewayInfo{gws: exGateways, bfdEnabled: newBFDEnabled}, nsInfo, old.Name)
-			if err != nil {
-				errors = append(errors, err)
+			if exGateways.Len() != 0 {
+				err = oc.addExternalGWsForNamespace(gatewayInfo{gws: exGateways, bfdEnabled: newBFDEnabled}, nsInfo, old.Name)
+				if err != nil {
+					errors = append(errors, err)
+				}
 			}
 		}
 		// if new annotation is empty, exgws were removed, may need to add SNAT per pod
@@ -278,16 +280,14 @@ func (oc *DefaultNetworkController) deleteNamespace(ns *kapi.Namespace) error {
 // with its mutex locked.
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 func (oc *DefaultNetworkController) ensureNamespaceLocked(ns string, readOnly bool, namespace *kapi.Namespace) (*namespaceInfo, func(), error) {
-	var ips []net.IP
-
-	// special handling of host network namespace. issues/3381
-	if config.Kubernetes.HostNetworkNamespace != "" && ns == config.Kubernetes.HostNetworkNamespace {
-		ips = oc.getAllHostNamespaceAddresses()
-	} else {
-		ips = oc.getAllNamespacePodAddresses(ns)
+	ipsGetter := func(ns string) []net.IP {
+		// special handling of host network namespace. issues/3381
+		if config.Kubernetes.HostNetworkNamespace != "" && ns == config.Kubernetes.HostNetworkNamespace {
+			return oc.getAllHostNamespaceAddresses()
+		}
+		return oc.getAllNamespacePodAddresses(ns)
 	}
-
-	return oc.ensureNamespaceLockedCommon(ns, readOnly, namespace, ips, oc.configureNamespace)
+	return oc.ensureNamespaceLockedCommon(ns, readOnly, namespace, ipsGetter, oc.configureNamespace)
 }
 
 func (oc *DefaultNetworkController) getAllHostNamespaceAddresses() []net.IP {

@@ -6,7 +6,6 @@ package cni
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"runtime"
@@ -130,7 +129,7 @@ func renameLink(curName, newName string) error {
 }
 
 func setSysctl(sysctl string, newVal int) error {
-	return ioutil.WriteFile(sysctl, []byte(strconv.Itoa(newVal)), 0o640)
+	return os.WriteFile(sysctl, []byte(strconv.Itoa(newVal)), 0o640)
 }
 
 func moveIfToNetns(ifname string, netns ns.NetNS) error {
@@ -153,6 +152,11 @@ func setupNetwork(link netlink.Link, ifInfo *PodInterfaceInfo) error {
 		if err := util.GetNetLinkOps().LinkSetUp(link); err != nil {
 			return fmt.Errorf("failed to set up interface %s: %v", link.Attrs().Name, err)
 		}
+	}
+
+	if ifInfo.SkipIPConfig {
+		klog.Infof("Skipping network configuration for pod: %s", ifInfo.PodUID)
+		return nil
 	}
 
 	// set the IP address

@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/urfave/cli/v2"
 
+	ipallocator "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/allocator/ip"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/ipallocator"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -19,6 +20,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilnet "k8s.io/utils/net"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -26,7 +28,6 @@ import (
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
 
-	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
@@ -79,8 +80,12 @@ func newPodWithLabels(namespace, name, node, podIP string, additionalLabels map[
 
 func newPod(namespace, name, node, podIP string) *v1.Pod {
 	podIPs := []v1.PodIP{}
-	if podIP != "" {
-		podIPs = append(podIPs, v1.PodIP{IP: podIP})
+	ips := strings.Split(podIP, " ")
+	if len(ips) > 0 {
+		podIP = ips[0]
+		for _, ip := range ips {
+			podIPs = append(podIPs, v1.PodIP{IP: ip})
+		}
 	}
 	return &v1.Pod{
 		ObjectMeta: newPodMeta(namespace, name, nil),
@@ -120,6 +125,12 @@ func newNode(nodeName, nodeIPv4 string) *v1.Node {
 					Status: v1.ConditionTrue,
 				},
 			},
+			Addresses: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: nodeIPv4,
+				},
+			},
 		},
 	}
 }
@@ -154,16 +165,17 @@ type portInfo struct {
 	podIP    string
 	podMAC   string
 	portName string
+	tunnelID int
 }
 
-func newTPod(nodeName, nodeSubnet, nodeMgtIP, nodeGWIP, podName, podIP, podMAC, namespace string) (to testPod) {
+func newTPod(nodeName, nodeSubnet, nodeMgtIP, nodeGWIP, podName, podIPs, podMAC, namespace string) testPod {
 	portName := util.GetLogicalPortName(namespace, podName)
-	to = testPod{
+	to := testPod{
 		portUUID:          portName + "-UUID",
 		nodeSubnet:        nodeSubnet,
 		nodeMgtIP:         nodeMgtIP,
 		nodeGWIP:          nodeGWIP,
-		podIP:             podIP,
+		podIP:             podIPs,
 		podMAC:            podMAC,
 		portName:          portName,
 		nodeName:          nodeName,
@@ -171,55 +183,131 @@ func newTPod(nodeName, nodeSubnet, nodeMgtIP, nodeGWIP, podName, podIP, podMAC, 
 		namespace:         namespace,
 		secondaryPodInfos: map[string]*secondaryPodInfo{},
 	}
-	return
+
+	var routeSources []*net.IPNet
+	for _, podIP := range strings.Split(podIPs, " ") {
+		isIPv6 := ovntest.MustParseIP(podIP).To4() == nil
+
+		for _, subnet := range config.Default.ClusterSubnets {
+			if utilnet.IsIPv6CIDR(subnet.CIDR) == isIPv6 {
+				routeSources = append(routeSources, subnet.CIDR)
+			}
+		}
+		for _, sc := range config.Kubernetes.ServiceCIDRs {
+			if utilnet.IsIPv6CIDR(sc) == isIPv6 {
+				routeSources = append(routeSources, sc)
+			}
+		}
+		joinNet := config.Gateway.V4JoinSubnet
+		if isIPv6 {
+			joinNet = config.Gateway.V6JoinSubnet
+		}
+		routeSources = append(routeSources, ovntest.MustParseIPNet(joinNet))
+	}
+
+	gwIPs := strings.Split(nodeGWIP, " ")
+	var gwIPv4, gwIPv6 *net.IP
+	for _, gwIP := range gwIPs {
+		gwNetIP := ovntest.MustParseIP(gwIP)
+		isIPv6 := gwNetIP.To4() == nil
+		if isIPv6 {
+			gwIPv6 = &gwNetIP
+		} else {
+			gwIPv4 = &gwNetIP
+		}
+	}
+	for _, rs := range routeSources {
+		isIPv6 := ovntest.MustParseIPNet(rs.String()).IP.To4() == nil
+		gwIP := gwIPv4
+		if isIPv6 {
+			gwIP = gwIPv6
+		}
+		to.routes = append(to.routes, util.PodRoute{rs, *gwIP})
+	}
+
+	return to
 }
 
-func (p testPod) populateLogicalSwitchCache(fakeOvn *FakeOVN, uuid string) {
+func (p testPod) populateLogicalSwitchCache(fakeOvn *FakeOVN) {
 	gomega.Expect(p.nodeName).NotTo(gomega.Equal(""))
-	err := fakeOvn.controller.lsManager.AddSwitch(p.nodeName, uuid, []*net.IPNet{ovntest.MustParseIPNet(p.nodeSubnet)})
+	subnets := []*net.IPNet{}
+	for _, subnet := range strings.Split(p.nodeSubnet, " ") {
+		subnets = append(subnets, ovntest.MustParseIPNet(subnet))
+	}
+	err := fakeOvn.controller.lsManager.AddOrUpdateSwitch(p.nodeName, subnets)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
 func (p testPod) getAnnotationsJson() string {
-	var podRoutes string
-	for key, route := range p.routes {
-		routeString := `{"dest":"` + route.Dest.String() + `","nextHop":"` + route.NextHop.String() + `"}`
-		if key == len(p.routes)-1 {
-			podRoutes += podRoutes + routeString
-		} else {
-			podRoutes += podRoutes + routeString + ","
+	type podRoute struct {
+		Dest    string `json:"dest"`
+		NextHop string `json:"nextHop"`
+	}
+	type podAnnotation struct {
+		MAC      string     `json:"mac_address"`
+		IP       string     `json:"ip_address,omitempty"`
+		IPs      []string   `json:"ip_addresses"`
+		Gateway  string     `json:"gateway_ip,omitempty"`
+		Gateways []string   `json:"gateway_ips,omitempty"`
+		Routes   []podRoute `json:"routes,omitempty"`
+		TunnelID int        `json:"tunnel_id,omitempty"`
+	}
+
+	addresses := []string{}
+	for _, podIP := range strings.Split(p.podIP, " ") {
+		if utilnet.IsIPv4String(podIP) {
+			podIP += "/24"
+		} else if utilnet.IsIPv6String(podIP) {
+			podIP += "/64"
+		}
+		addresses = append(addresses, podIP)
+	}
+
+	nodeGWIPs := strings.Split(p.nodeGWIP, " ")
+
+	var routes []podRoute
+	for _, route := range p.routes {
+		routes = append(routes, podRoute{Dest: route.Dest.String(), NextHop: route.NextHop.String()})
+	}
+
+	podAnnotations := map[string]podAnnotation{
+		"default": {
+			MAC:      p.podMAC,
+			IP:       addresses[0],
+			IPs:      addresses,
+			Gateway:  nodeGWIPs[0],
+			Gateways: nodeGWIPs,
+			Routes:   routes,
+		},
+	}
+
+	for _, portInfos := range p.secondaryPodInfos {
+		for nad, portInfo := range portInfos.allportInfo {
+			ipPrefix := 24
+			if ovntest.MustParseIP(p.podIP).To4() == nil {
+				ipPrefix = 64
+			}
+			ip := fmt.Sprintf("%s/%d", portInfo.podIP, ipPrefix)
+			podAnnotation := podAnnotation{
+				MAC:      portInfo.podMAC,
+				IP:       ip,
+				IPs:      []string{ip},
+				TunnelID: portInfo.tunnelID,
+			}
+			podAnnotations[nad] = podAnnotation
 		}
 	}
 
-	podRoutesJSON := ""
-	if len(podRoutes) > 0 {
-		podRoutesJSON = `, "routes":[` + podRoutes + `]`
-	}
-	return `{"default": {"ip_addresses":["` + p.podIP + `/24"], "mac_address":"` + p.podMAC + `",
-		"gateway_ips": ["` + p.nodeGWIP + `"], "ip_address":"` + p.podIP + `/24", "gateway_ip": "` + p.nodeGWIP + `"` + podRoutesJSON + `}}`
-
+	bytes, err := json.Marshal(podAnnotations)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	return string(bytes)
 }
 
 func setPodAnnotations(podObj *v1.Pod, testPod testPod) {
-	podAnnot := map[string]string{
-		util.OvnPodAnnotationName: testPod.getAnnotationsJson(),
+	if podObj.Annotations == nil {
+		podObj.Annotations = map[string]string{}
 	}
-	podObj.Annotations = podAnnot
-}
-
-func getLogicalSwitchUUID(client libovsdbclient.Client, name string) string {
-	ctext, cancel := context.WithTimeout(context.Background(), ovntypes.OVSDBTimeout)
-	defer cancel()
-	lsl := []nbdb.LogicalSwitch{}
-	err := client.WhereCache(
-		func(ls *nbdb.LogicalSwitch) bool {
-			return ls.Name == name
-		}).List(ctext, &lsl)
-
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	gomega.Expect(len(lsl)).To(gomega.Equal(1))
-	return lsl[0].UUID
-
+	podObj.Annotations[util.OvnPodAnnotationName] = testPod.getAnnotationsJson()
 }
 
 func getExpectedDataPodsAndSwitches(pods []testPod, nodes []string) []libovsdbtest.TestData {
@@ -370,7 +458,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 				// Assign it and perform the update
 				t.nodeName = "node1"
 				t.portName = util.GetLogicalPortName(t.namespace, t.podName)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 
 				_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(t.namespace).Update(context.TODO(),
 					newPod(t.namespace, t.podName, t.nodeName, t.podIP), metav1.UpdateOptions{})
@@ -418,7 +506,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -473,7 +561,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -585,7 +673,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -759,7 +847,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -807,7 +895,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -882,7 +970,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				podTest.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				podTest.populateLogicalSwitchCache(fakeOvn)
 				err = fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				fakeOvn.asf.ExpectAddressSetWithIPs(podTest.namespace, []string{podTest.podIP})
@@ -958,7 +1046,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				podTest.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				podTest.populateLogicalSwitchCache(fakeOvn)
 				err = fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -1037,7 +1125,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				podTest.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				podTest.populateLogicalSwitchCache(fakeOvn)
 				err = fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
@@ -1149,9 +1237,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				podTest.populateLogicalSwitchCache(
-					fakeOvn,
-					getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				podTest.populateLogicalSwitchCache(fakeOvn)
 				err = fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -1262,7 +1348,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				podTest.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				podTest.populateLogicalSwitchCache(fakeOvn)
 				err = fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -1393,7 +1479,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1454,7 +1540,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1510,7 +1596,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -1569,7 +1655,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 				// pod exists, networks annotations don't
 				pod, err := fakeOvn.fakeClient.KubeClient.CoreV1().Pods(t.namespace).Get(context.TODO(), t.podName, metav1.GetOptions{})
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -1629,7 +1715,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t.populateLogicalSwitchCache(fakeOvn)
 				// pod annotations exist, lsp doesn't
 				annotations := getPodAnnotations(fakeOvn.fakeClient.KubeClient, t.namespace, t.podName)
 				gomega.Expect(annotations).To(gomega.MatchJSON(t.getAnnotationsJson()))
@@ -1699,9 +1785,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 					},
 				)
 
-				// we don't know the real switch UUID in the db, but it can be found by name
-				swUUID := getLogicalSwitchUUID(fakeOvn.controller.nbClient, testNode.Name)
-				fakeOvn.controller.lsManager.AddSwitch(testNode.Name, swUUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
+				fakeOvn.controller.lsManager.AddOrUpdateSwitch(testNode.Name, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
 				err := fakeOvn.controller.WatchNamespaces()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				err = fakeOvn.controller.WatchPods()
@@ -1855,9 +1939,9 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t1.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
-				t2.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node2"))
-				t3.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t1.populateLogicalSwitchCache(fakeOvn)
+				t2.populateLogicalSwitchCache(fakeOvn)
+				t3.populateLogicalSwitchCache(fakeOvn)
 				// pod annotations and lsp exist now
 
 				err := fakeOvn.controller.WatchNamespaces()
@@ -1932,9 +2016,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						Items: []v1.Pod{},
 					},
 				)
-				// we don't know the real switch UUID in the db, but it can be found by name
-				swUUID := getLogicalSwitchUUID(fakeOvn.controller.nbClient, testNodeWithLS.Name)
-				fakeOvn.controller.lsManager.AddSwitch(testNodeWithLS.Name, swUUID, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
+				fakeOvn.controller.lsManager.AddOrUpdateSwitch(testNodeWithLS.Name, []*net.IPNet{ovntest.MustParseIPNet(v4NodeSubnet)})
 				err := fakeOvn.controller.WatchPods()
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				// expect stale logical switch port removed if reconciliation is successful
@@ -2017,7 +2099,7 @@ var _ = ginkgo.Describe("OVN Pod Operations", func() {
 						},
 					},
 				)
-				t1.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, "node1"))
+				t1.populateLogicalSwitchCache(fakeOvn)
 				// pod annotations and lsp exist now
 
 				err := fakeOvn.controller.WatchNamespaces()

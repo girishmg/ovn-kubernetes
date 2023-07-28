@@ -10,10 +10,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
+	adminpolicybasedrouteclient "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/clientset/versioned/fake"
 	factorymocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory/mocks"
 	kubemocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube/mocks"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
 	linkMock "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/github.com/vishvananda/netlink"
+	coreinformermocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/k8s.io/client-go/informers/core/v1"
 	v1mocks "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/mocks/k8s.io/client-go/listers/core/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -85,6 +87,7 @@ var _ = Describe("Node DPU tests", func() {
 	var factoryMock factorymocks.NodeWatchFactory
 	var pod v1.Pod
 	var dnnc *DefaultNodeNetworkController
+	var podInformer coreinformermocks.PodInformer
 	var podLister v1mocks.PodLister
 	var podNamespaceLister v1mocks.PodNamespaceLister
 	var clientset *cni.ClientSet
@@ -105,10 +108,12 @@ var _ = Describe("Node DPU tests", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		kubeMock = kubemocks.Interface{}
+		apbExternalRouteClient := adminpolicybasedrouteclient.NewSimpleClientset()
 		factoryMock = factorymocks.NodeWatchFactory{}
-		cnnci := newCommonNodeNetworkControllerInfo(nil, &kubeMock, &factoryMock, nil, "", false)
+		cnnci := newCommonNodeNetworkControllerInfo(nil, &kubeMock, apbExternalRouteClient, &factoryMock, nil, "")
 		dnnc = newDefaultNodeNetworkController(cnnci, nil, nil)
 
+		podInformer = coreinformermocks.PodInformer{}
 		podNamespaceLister = v1mocks.PodNamespaceLister{}
 		podLister = v1mocks.PodLister{}
 		podLister.On("Pods", mock.AnythingOfType("string")).Return(&podNamespaceLister)
@@ -326,13 +331,15 @@ var _ = Describe("Node DPU tests", func() {
 				dcs := util.DPUConnectionStatus{
 					Status: "Ready",
 				}
-				factoryMock.On("GetPod", pod.Namespace, pod.Name).Return(&pod, nil)
 				cpod := pod.DeepCopy()
 				cpod.Annotations, err = util.MarshalPodDPUConnStatus(cpod.Annotations, &dcs, types.DefaultNetworkName)
 				Expect(err).ToNot(HaveOccurred())
-				kubeMock.On("UpdatePod", cpod).Return(nil)
 
+				factoryMock.On("PodCoreInformer").Return(&podInformer)
+				podInformer.On("Lister").Return(&podLister)
+				podLister.On("Pods", mock.AnythingOfType("string")).Return(&podNamespaceLister)
 				podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(&pod, nil)
+				kubeMock.On("UpdatePod", cpod).Return(nil)
 
 				err = dnnc.addRepPort(&pod, &scd, ifInfo, clientset)
 				Expect(err).ToNot(HaveOccurred())
@@ -347,11 +354,9 @@ var _ = Describe("Node DPU tests", func() {
 				dcs := util.DPUConnectionStatus{
 					Status: "Ready",
 				}
-				factoryMock.On("GetPod", pod.Namespace, pod.Name).Return(&pod, nil)
 				cpod := pod.DeepCopy()
 				cpod.Annotations, err = util.MarshalPodDPUConnStatus(cpod.Annotations, &dcs, types.DefaultNetworkName)
 				Expect(err).ToNot(HaveOccurred())
-				kubeMock.On("UpdatePod", cpod).Return(fmt.Errorf("failed to set pod annotations"))
 				// Mock netlink/ovs calls for cleanup
 				checkOVSPortPodInfo(execMock, vfRep, true, "15", "a8d09931", "default")
 				netlinkOpsMock.On("LinkSetDown", vfLink).Return(nil)
@@ -359,7 +364,11 @@ var _ = Describe("Node DPU tests", func() {
 					Cmd: genOVSDelPortCmd("pf0vf9"),
 				})
 
+				factoryMock.On("PodCoreInformer").Return(&podInformer)
+				podInformer.On("Lister").Return(&podLister)
+				podLister.On("Pods", mock.AnythingOfType("string")).Return(&podNamespaceLister)
 				podNamespaceLister.On("Get", mock.AnythingOfType("string")).Return(&pod, nil)
+				kubeMock.On("UpdatePod", cpod).Return(fmt.Errorf("failed to set pod annotations"))
 
 				err = dnnc.addRepPort(&pod, &scd, ifInfo, clientset)
 				Expect(err).To(HaveOccurred())

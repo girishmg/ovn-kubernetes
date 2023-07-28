@@ -3,7 +3,6 @@ package config
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
@@ -110,6 +109,8 @@ var (
 		OVNConfigNamespace:   "ovn-kubernetes",
 		HostNetworkNamespace: "",
 		PlatformType:         "",
+		DNSServiceNamespace:  "kube-system",
+		DNSServiceName:       "kube-dns",
 	}
 
 	// Metrics holds Prometheus metrics-related parameters.
@@ -240,7 +241,7 @@ type DefaultConfig struct {
 	// the kernel network stack. This requires a new-enough kernel (5.15 or RHEL 8.5).
 	EnableUDPAggregation bool `gcfg:"enable-udp-aggregation"`
 
-	// Zone name to which ovnkube-node/ovnkube-network-controller-manager belongs to
+	// Zone name to which ovnkube-node/ovnkube-controller belongs to
 	Zone string `gcfg:"zone"`
 }
 
@@ -330,6 +331,9 @@ type KubernetesConfig struct {
 	CompatOVNMetricsBindAddress string `gcfg:"ovn-metrics-bind-address"`
 	// CompatMetricsEnablePprof is overridden by the corresponding option in MetricsConfig
 	CompatMetricsEnablePprof bool `gcfg:"metrics-enable-pprof"`
+
+	DNSServiceNamespace string `gcfg:"dns-service-namespace"`
+	DNSServiceName      string `gcfg:"dns-service-name"`
 }
 
 // MetricsConfig holds Prometheus metrics-related parameters.
@@ -360,6 +364,7 @@ type OVNKubernetesFeatureConfig struct {
 	EnableMultiNetworkPolicy        bool `gcfg:"enable-multi-networkpolicy"`
 	EnableStatelessNetPol           bool `gcfg:"enable-stateless-netpol"`
 	EnableInterconnect              bool `gcfg:"enable-interconnect"`
+	EnableMultiExternalGateway      bool `gcfg:"enable-multi-external-gateway"`
 }
 
 // GatewayMode holds the node gateway mode
@@ -406,6 +411,8 @@ type GatewayConfig struct {
 	SingleNode bool `gcfg:"single-node"`
 	// DisableForwarding (enabled by default) controls if forwarding is allowed on OVNK controlled interfaces
 	DisableForwarding bool `gcfg:"disable-forwarding"`
+	// AllowNoUplink (disabled by default) controls if the external gateway bridge without an uplink port is allowed in local gateway mode.
+	AllowNoUplink bool `gcfg:"allow-no-uplink"`
 }
 
 // OvnAuthConfig holds client authentication and location details for
@@ -453,7 +460,6 @@ type OvnKubeNodeConfig struct {
 	DPResourceDeviceIdsMap map[string][]string
 	MgmtPortNetdev         string `gcfg:"mgmt-port-netdev"`
 	MgmtPortDPResourceName string `gcfg:"mgmt-port-dp-resource-name"`
-	DisableOVNIfaceIdVer   bool   `gcfg:"disable-ovn-iface-id-ver"`
 }
 
 // ClusterManagerConfig holds configuration for ovnkube-cluster-manager
@@ -522,6 +528,8 @@ var (
 	initGateways bool
 	// legacy gateway-local CLI option
 	gatewayLocal bool
+	// legacy disable-ovn-iface-id-ver CLI option
+	disableOVNIfaceIDVer bool
 )
 
 func init() {
@@ -649,15 +657,15 @@ var CommonFlags = []cli.Flag{
 	// Mode flags
 	&cli.StringFlag{
 		Name:  "init-master",
-		Usage: "initialize master (both cluster-manager and network-controller-manager), requires the hostname as argument",
+		Usage: "initialize master (both cluster-manager and ovnkube-controller), requires the hostname as argument",
 	},
 	&cli.StringFlag{
 		Name:  "init-cluster-manager",
-		Usage: "initialize cluster manager (but not network-controller-manager), requires the hostname as argument",
+		Usage: "initialize cluster manager (but not ovnkube-controller), requires the hostname as argument",
 	},
 	&cli.StringFlag{
-		Name:  "init-network-controller-manager",
-		Usage: "initialize network-controller-manager (but not cluster-manager), requires the hostname as argument",
+		Name:  "init-ovnkube-controller",
+		Usage: "initialize ovnkube-controller (but not cluster-manager), requires the hostname as argument",
 	},
 	&cli.StringFlag{
 		Name:  "init-node",
@@ -838,7 +846,7 @@ var CommonFlags = []cli.Flag{
 	},
 	&cli.StringFlag{
 		Name:        "zone",
-		Usage:       "zone name to which ovnkube-node/ovnkube-network-controller-manager belongs to",
+		Usage:       "zone name to which ovnkube-node/ovnkube-controller belongs to",
 		Value:       Default.Zone,
 		Destination: &cliConfig.Default.Zone,
 	},
@@ -969,6 +977,12 @@ var OVNK8sFeatureFlags = []cli.Flag{
 		Destination: &cliConfig.OVNKubernetesFeature.EnableEgressService,
 		Value:       OVNKubernetesFeature.EnableEgressService,
 	},
+	&cli.BoolFlag{
+		Name:        "enable-multi-external-gateway",
+		Usage:       "Configure to use AdminPolicyBasedExternalRoute CRD feature with ovn-kubernetes.",
+		Destination: &cliConfig.OVNKubernetesFeature.EnableMultiExternalGateway,
+		Value:       OVNKubernetesFeature.EnableMultiExternalGateway,
+	},
 }
 
 // K8sFlags capture Kubernetes-related options
@@ -1058,6 +1072,18 @@ var K8sFlags = []cli.Flag{
 		Name:        "healthz-bind-address",
 		Usage:       "The IP address and port for the node proxy healthz server to serve on (set to '0.0.0.0:10256' or '[::]:10256' for listening in all interfaces and IP families). Disabled by default.",
 		Destination: &cliConfig.Kubernetes.HealthzBindAddress,
+	},
+	&cli.StringFlag{
+		Name:        "dns-service-namespace",
+		Usage:       "DNS kubernetes service namespace used to expose name resolving to live migratable vms.",
+		Destination: &cliConfig.Kubernetes.DNSServiceNamespace,
+		Value:       Kubernetes.DNSServiceNamespace,
+	},
+	&cli.StringFlag{
+		Name:        "dns-service-name",
+		Usage:       "DNS kubernetes service name used to expose name resolving to live migratable vms.",
+		Destination: &cliConfig.Kubernetes.DNSServiceName,
+		Value:       Kubernetes.DNSServiceName,
 	},
 }
 
@@ -1272,6 +1298,11 @@ var OVNGatewayFlags = []cli.Flag{
 			"Single node indicates a one node cluster and allows to simplify ovn-kubernetes gateway logic",
 		Destination: &cliConfig.Gateway.SingleNode,
 	},
+	&cli.BoolFlag{
+		Name:        "allow-no-uplink",
+		Usage:       "Allow the external gateway bridge without an uplink port in local gateway mode",
+		Destination: &cliConfig.Gateway.AllowNoUplink,
+	},
 	// Deprecated CLI options
 	&cli.BoolFlag{
 		Name:        "init-gateways",
@@ -1379,11 +1410,9 @@ var OvnKubeNodeFlags = []cli.Flag{
 		Destination: &cliConfig.OvnKubeNode.MgmtPortDPResourceName,
 	},
 	&cli.BoolFlag{
-		Name: "disable-ovn-iface-id-ver",
-		Usage: "if iface-id-ver option is not enabled in ovn, set this flag to True " +
-			"(depends on ovn version, minimal required is 21.09)",
-		Value:       OvnKubeNode.DisableOVNIfaceIdVer,
-		Destination: &cliConfig.OvnKubeNode.DisableOVNIfaceIdVer,
+		Name:        "disable-ovn-iface-id-ver",
+		Usage:       "Deprecated; iface-id-ver is always enabled",
+		Destination: &disableOVNIfaceIDVer,
 	},
 }
 
@@ -1499,7 +1528,7 @@ func setOVSExternalID(exec kexec.Interface, key, value string) error {
 func buildKubernetesConfig(exec kexec.Interface, cli, file *config, saPath string, defaults *Defaults) error {
 	// token adn ca.crt may be from files mounted in container.
 	saConfig := savedKubernetes
-	if data, err := ioutil.ReadFile(filepath.Join(saPath, kubeServiceAccountFileToken)); err == nil {
+	if data, err := os.ReadFile(filepath.Join(saPath, kubeServiceAccountFileToken)); err == nil {
 		saConfig.Token = string(data)
 		saConfig.TokenFile = filepath.Join(saPath, kubeServiceAccountFileToken)
 	}
@@ -1564,7 +1593,7 @@ func buildKubernetesConfig(exec kexec.Interface, cli, file *config, saPath strin
 	}
 
 	if Kubernetes.CACert != "" {
-		bytes, err := ioutil.ReadFile(Kubernetes.CACert)
+		bytes, err := os.ReadFile(Kubernetes.CACert)
 		if err != nil {
 			return err
 		}

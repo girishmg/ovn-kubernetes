@@ -33,6 +33,8 @@ import (
 const (
 	ovnNamespace   = "ovn-kubernetes"
 	ovnNodeSubnets = "k8s.ovn.org/node-subnets"
+	// ovnNodeZoneNameAnnotation is the node annotation name to store the node zone name.
+	ovnNodeZoneNameAnnotation = "k8s.ovn.org/zone-name"
 )
 
 var containerRuntime = "docker"
@@ -582,7 +584,7 @@ func deletePodSyncNS(clientSet kubernetes.Interface, namespace, podName string) 
 
 // waitClusterHealthy ensures we have a given number of ovn-k worker and master nodes,
 // as well as all nodes are healthy
-func waitClusterHealthy(f *framework.Framework, numMasters int) error {
+func waitClusterHealthy(f *framework.Framework, numControlPlanePods int, controlPlanePodName string) error {
 	return wait.PollImmediate(2*time.Second, 120*time.Second, func() (bool, error) {
 		nodes, err := f.ClientSet.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
 		if err != nil {
@@ -625,13 +627,13 @@ func waitClusterHealthy(f *framework.Framework, numMasters int) error {
 		}
 
 		podList, err = podClient.List(context.Background(), metav1.ListOptions{
-			LabelSelector: "name=ovnkube-master",
+			LabelSelector: "name=" + controlPlanePodName,
 		})
 		if err != nil {
-			return false, fmt.Errorf("failed to list ovn-kube node pods: %w", err)
+			return false, fmt.Errorf("failed to list ovn-kube master pods: %w", err)
 		}
-		if len(podList.Items) != numMasters {
-			framework.Logf("Not enough running ovnkube-master pods, want %d, have %d", numMasters, len(podList.Items))
+		if len(podList.Items) != numControlPlanePods {
+			framework.Logf("Not enough running %s pods, want %d, have %d", numControlPlanePods, numControlPlanePods, len(podList.Items))
 			return false, nil
 		}
 
@@ -864,10 +866,12 @@ func pokeIPTableRules(clientContainer, pattern string) int {
 	cmd = append(cmd, ipTCommand...)
 	iptRules, err := runCommand(cmd...)
 	framework.ExpectNoError(err, "failed to get iptable rules from node %s", clientContainer)
+	framework.Logf("DEBUG: Dumping IPTRules %v", iptRules)
 	numOfMatchRules := 0
 	for _, iptRule := range strings.Split(iptRules, "\n") {
 		match := strings.Contains(iptRule, pattern)
 		if match {
+			framework.Logf("DEBUG: Matched rule %s for pattern %s", iptRule, pattern)
 			numOfMatchRules++
 		}
 	}
@@ -875,7 +879,6 @@ func pokeIPTableRules(clientContainer, pattern string) int {
 }
 
 // isDualStackCluster returns 'true' if at least one of the nodes has more than one node subnet.
-// This can reliably be determined by checking that Annotations["k8s.ovn.org/node-subnets"] parses into map[string][]string.
 func isDualStackCluster(nodes *v1.NodeList) bool {
 	for _, node := range nodes.Items {
 		annotation, ok := node.Annotations[ovnNodeSubnets]
@@ -883,9 +886,11 @@ func isDualStackCluster(nodes *v1.NodeList) bool {
 			continue
 		}
 
-		subnetsDual := make(map[string][]string)
-		if err := json.Unmarshal([]byte(annotation), &subnetsDual); err == nil {
-			return true
+		subnets := make(map[string][]string)
+		if err := json.Unmarshal([]byte(annotation), &subnets); err == nil {
+			if len(subnets["default"]) > 1 {
+				return true
+			}
 		}
 	}
 	return false
@@ -900,8 +905,6 @@ func wrappedTestFramework(basename string) *framework.Framework {
 			return
 		}
 
-		ovnDocker := "ovn-control-plane"
-
 		logLocation := "/var/log"
 		dbLocation := "/var/lib/openvswitch"
 		ovsdbLocation := "/etc/origin/openvswitch"
@@ -913,7 +916,7 @@ func wrappedTestFramework(basename string) *framework.Framework {
 
 		var args []string
 
-		// grab all OVS dbs
+		// grab all OVS and OVN dbs
 		nodes, err := f.ClientSet.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
 		framework.ExpectNoError(err)
 		for _, node := range nodes.Items {
@@ -927,18 +930,18 @@ func wrappedTestFramework(basename string) *framework.Framework {
 				fmt.Sprintf("%s/%s", logDir, fmt.Sprintf("%s-%s", node.Name, ovsdb))}
 			_, err = runCommand(args...)
 			framework.ExpectNoError(err)
-		}
 
-		args = []string{containerRuntime, "exec", ovnDocker, "stat", fmt.Sprintf("%s/%s", dbLocation, dbs[0])}
-		_, err = runCommand(args...)
-		framework.ExpectNoError(err)
-
-		// grab the OVN dbs
-		for _, db := range dbs {
-			args = []string{containerRuntime, "exec", ovnDocker, "cp", "-f", fmt.Sprintf("%s/%s", dbLocation, db),
-				fmt.Sprintf("%s/%s", logDir, db)}
+			// IC will have dbs on every node, but legacy mode wont, check if they exist
+			args = []string{containerRuntime, "exec", node.Name, "stat", fmt.Sprintf("%s/%s", dbLocation, dbs[0])}
 			_, err = runCommand(args...)
-			framework.ExpectNoError(err)
+			if err == nil {
+				for _, db := range dbs {
+					args = []string{containerRuntime, "exec", node.Name, "cp", "-f", fmt.Sprintf("%s/%s", dbLocation, db),
+						fmt.Sprintf("%s/%s", logDir, db)}
+					_, err = runCommand(args...)
+					framework.ExpectNoError(err)
+				}
+			}
 		}
 	})
 
@@ -1060,4 +1063,19 @@ func randStr(n int) string {
 		b[i] = charset[rand.Intn(len(charset))]
 	}
 	return string(b)
+}
+
+func isInterconnectEnabled() bool {
+	val, present := os.LookupEnv("OVN_ENABLE_INTERCONNECT")
+	return present && val == "true"
+}
+
+// getNodeZone returns the node's zone
+func getNodeZone(node *v1.Node) (string, error) {
+	nodeZone, ok := node.Annotations[ovnNodeZoneNameAnnotation]
+	if !ok {
+		return "", fmt.Errorf("zone for the node %s not set in the annotation %s", node.Name, ovnNodeZoneNameAnnotation)
+	}
+
+	return nodeZone, nil
 }

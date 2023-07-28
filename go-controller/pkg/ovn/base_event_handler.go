@@ -12,6 +12,7 @@ import (
 	mnpapi "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/apis/k8s.cni.cncf.io/v1beta1"
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
@@ -29,7 +30,6 @@ func hasResourceAnUpdateFunc(objType reflect.Type) bool {
 		factory.EgressIPPodType,
 		factory.EgressNodeType,
 		factory.EgressFwNodeType,
-		factory.CloudPrivateIPConfigType,
 		factory.LocalPodSelectorType,
 		factory.NamespaceType,
 		factory.MultiNetworkPolicyType:
@@ -92,8 +92,7 @@ func (h *baseNetworkControllerEventHandler) areResourcesEqual(objType reflect.Ty
 
 	case factory.EgressIPType,
 		factory.EgressIPNamespaceType,
-		factory.EgressNodeType,
-		factory.CloudPrivateIPConfigType:
+		factory.EgressNodeType:
 		// force update path for EgressIP resource.
 		return false, nil
 
@@ -167,9 +166,6 @@ func (h *baseNetworkControllerEventHandler) getResourceFromInformerCache(objType
 	case factory.EgressIPType:
 		obj, err = watchFactory.GetEgressIP(name)
 
-	case factory.CloudPrivateIPConfigType:
-		obj, err = watchFactory.GetCloudPrivateIPConfig(name)
-
 	case factory.MultiNetworkPolicyType:
 		obj, err = watchFactory.GetMultiNetworkPolicy(namespace, name)
 
@@ -199,7 +195,6 @@ func needsUpdateDuringRetry(objType reflect.Type) bool {
 		factory.EgressIPType,
 		factory.EgressIPPodType,
 		factory.EgressIPNamespaceType,
-		factory.CloudPrivateIPConfigType,
 		factory.MultiNetworkPolicyType:
 		return true
 	}
@@ -216,5 +211,44 @@ func (h *baseNetworkControllerEventHandler) isObjectInTerminalState(objType refl
 
 	default:
 		return false
+	}
+}
+
+func (h *baseNetworkControllerEventHandler) recordAddEvent(objType reflect.Type, obj interface{}) {
+	switch objType {
+	case factory.MultiNetworkPolicyType:
+		mnp := obj.(*mnpapi.MultiNetworkPolicy)
+		klog.V(5).Infof("Recording add event on multinetwork policy %s/%s", mnp.Namespace, mnp.Name)
+		metrics.GetConfigDurationRecorder().Start("multinetworkpolicy", mnp.Namespace, mnp.Name)
+	}
+}
+
+// RecordUpdateEvent records the udpate event on this given object.
+func (h *baseNetworkControllerEventHandler) recordUpdateEvent(objType reflect.Type, obj interface{}) {
+	switch objType {
+	case factory.MultiNetworkPolicyType:
+		mnp := obj.(*mnpapi.MultiNetworkPolicy)
+		klog.V(5).Infof("Recording update event on multinetwork policy %s/%s", mnp.Namespace, mnp.Name)
+		metrics.GetConfigDurationRecorder().Start("multinetworkpolicy", mnp.Namespace, mnp.Name)
+	}
+}
+
+// RecordDeleteEvent records the delete event on this given object.
+func (h *baseNetworkControllerEventHandler) recordDeleteEvent(objType reflect.Type, obj interface{}) {
+	switch objType {
+	case factory.MultiNetworkPolicyType:
+		mnp := obj.(*mnpapi.MultiNetworkPolicy)
+		klog.V(5).Infof("Recording delete event on multinetwork policy %s/%s", mnp.Namespace, mnp.Name)
+		metrics.GetConfigDurationRecorder().Start("multinetworkpolicy", mnp.Namespace, mnp.Name)
+	}
+}
+
+// RecordSuccessEvent records the success event on this given object.
+func (h *baseNetworkControllerEventHandler) recordSuccessEvent(objType reflect.Type, obj interface{}) {
+	switch objType {
+	case factory.MultiNetworkPolicyType:
+		mnp := obj.(*mnpapi.MultiNetworkPolicy)
+		klog.V(5).Infof("Recording success event on multinetwork policy %s/%s", mnp.Namespace, mnp.Name)
+		metrics.GetConfigDurationRecorder().End("multinetworkpolicy", mnp.Namespace, mnp.Name)
 	}
 }

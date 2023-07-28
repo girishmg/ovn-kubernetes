@@ -7,10 +7,12 @@ import (
 	"net"
 	"sync"
 
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
+	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	"github.com/pkg/errors"
 
 	kapi "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,7 +53,7 @@ type namespaceInfo struct {
 	multicastEnabled bool
 
 	// If not empty, then it has to be set to a logging a severity level, e.g. "notice", "alert", etc
-	aclLogging ACLLoggingLevels
+	aclLogging libovsdbutil.ACLLoggingLevels
 }
 
 func getNamespaceAddrSetDbIDs(namespaceName, controller string) *libovsdbops.DbObjectIDs {
@@ -66,9 +68,8 @@ func getNamespaceAddrSetDbIDs(namespaceName, controller string) *libovsdbops.DbO
 func (bnc *BaseNetworkController) WatchNamespaces() error {
 	if bnc.IsSecondary() {
 		// For secondary networks, we don't have to watch namespace events if
-		// multi-network policy support is not enabled. We don't support
-		// multi-network policy for IPAM-less secondary networks either.
-		if !util.IsMultiNetworkPoliciesSupportEnabled() || !bnc.doesNetworkRequireIPAM() {
+		// multi-network policy support is not enabled.
+		if !util.IsMultiNetworkPoliciesSupportEnabled() {
 			return nil
 		}
 	}
@@ -102,7 +103,7 @@ func (bnc *BaseNetworkController) WatchNamespaces() error {
 //
 //	annotation, then assume that this key should be disabled by setting its nsInfo value to "".
 func (bnc *BaseNetworkController) aclLoggingUpdateNsInfo(annotation string, nsInfo *namespaceInfo) error {
-	var aclLevels ACLLoggingLevels
+	var aclLevels libovsdbutil.ACLLoggingLevels
 	var errors []error
 
 	// If the annotation is "" or "{}", use empty strings. Otherwise, parse the annotation.
@@ -224,7 +225,7 @@ func (bnc *BaseNetworkController) multicastDeleteNamespace(ns *kapi.Namespace, n
 // ns is the name of the namespace, while namespace is the optional k8s namespace object
 // if no k8s namespace object is provided, this function will attempt to find it via informer cache
 func (bnc *BaseNetworkController) ensureNamespaceLockedCommon(ns string, readOnly bool, namespace *kapi.Namespace,
-	ips []net.IP, configureNamespace func(nsInfo *namespaceInfo, ns *kapi.Namespace) error) (*namespaceInfo, func(), error) {
+	ipsGetter func(ns string) []net.IP, configureNamespace func(nsInfo *namespaceInfo, ns *kapi.Namespace) error) (*namespaceInfo, func(), error) {
 	bnc.namespacesMutex.Lock()
 	nsInfo := bnc.namespaces[ns]
 	nsInfoExisted := false
@@ -240,6 +241,7 @@ func (bnc *BaseNetworkController) ensureNamespaceLockedCommon(ns string, readOnl
 		defer bnc.namespacesMutex.Unlock()
 		// create the adddress set for the new namespace
 		var err error
+		ips := ipsGetter(ns)
 		nsInfo.addressSet, err = bnc.createNamespaceAddrSetAllPods(ns, ips)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create address set for namespace: %s, error: %v", ns, err)
@@ -320,10 +322,10 @@ func (bnc *BaseNetworkController) configureNamespaceCommon(nsInfo *namespaceInfo
 
 // GetNamespaceACLLogging retrieves ACLLoggingLevels for the Namespace.
 // nsInfo will be locked (and unlocked at the end) for given namespace if it exists.
-func (bnc *BaseNetworkController) GetNamespaceACLLogging(ns string) *ACLLoggingLevels {
+func (bnc *BaseNetworkController) GetNamespaceACLLogging(ns string) *libovsdbutil.ACLLoggingLevels {
 	nsInfo, nsUnlock := bnc.getNamespaceLocked(ns, true)
 	if nsInfo == nil {
-		return &ACLLoggingLevels{
+		return &libovsdbutil.ACLLoggingLevels{
 			Allow: "",
 			Deny:  "",
 		}
@@ -350,6 +352,10 @@ func (bnc *BaseNetworkController) updateNamespaceAclLogging(ns, aclAnnotation st
 }
 
 func (bnc *BaseNetworkController) getAllNamespacePodAddresses(ns string) []net.IP {
+	if !bnc.doesNetworkRequireIPAM() {
+		return nil
+	}
+
 	var ips []net.IP
 	// Get all the pods in the namespace and append their IP to the address_set
 	existingPods, err := bnc.watchFactory.GetPods(ns)
@@ -382,6 +388,14 @@ func (bsnc *BaseNetworkController) removeRemoteZonePodFromNamespaceAddressSet(po
 	podDesc := fmt.Sprintf("pod %s/%s/%s", bsnc.GetNetworkName(), pod.Namespace, pod.Name)
 	podIfAddrs, err := util.GetPodCIDRsWithFullMask(pod, bsnc.NetInfo)
 	if err != nil {
+		// maybe the pod is not scheduled yet or addLSP has not happened yet, so it doesn't have IPs.
+		// let us ignore deletion failures for podIPs not found because
+		// there is nothing more we can do here.
+		if errors.Is(err, util.ErrNoPodIPFound) {
+			klog.Warningf("Unable to remove remote zone pod's %s/%s IP address from the "+
+				"namespace address-set, err: %v", pod.Namespace, pod.Name, err)
+			return nil
+		}
 		return fmt.Errorf("failed to get pod ips for the pod  %s/%s : %w", pod.Namespace, pod.Name, err)
 	}
 

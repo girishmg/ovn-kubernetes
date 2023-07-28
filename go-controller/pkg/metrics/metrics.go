@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/pprof"
 	"regexp"
@@ -26,7 +26,7 @@ import (
 
 const (
 	MetricOvnkubeNamespace               = "ovnkube"
-	MetricOvnkubeSubsystemMaster         = "master"
+	MetricOvnkubeSubsystemController     = "controller"
 	MetricOvnkubeSubsystemClusterManager = "clustermanager"
 	MetricOvnkubeSubsystemNode           = "node"
 	MetricOvnNamespace                   = "ovn"
@@ -433,7 +433,7 @@ func stringFlagPutHandler(setter stringFlagSetterFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case req.Method == "PUT":
-			body, err := ioutil.ReadAll(req.Body)
+			body, err := io.ReadAll(req.Body)
 			if err != nil {
 				writePlainText(http.StatusBadRequest, "error reading request body: "+err.Error(), w)
 				return

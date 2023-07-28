@@ -52,10 +52,13 @@ var _ = Describe("Multi Homing", func() {
 		nadClient, err = nadclient.NewForConfig(f.ClientConfig())
 		Expect(err).NotTo(HaveOccurred())
 		mnpClient, err = mnpclient.NewForConfig(f.ClientConfig())
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	Context("A single pod with an OVN-K secondary network", func() {
-		table.DescribeTable("is able to get to the Running phase", func(netConfig networkAttachmentConfig, podConfig podConfiguration) {
+		table.DescribeTable("is able to get to the Running phase", func(netConfigParams networkAttachmentConfigParams, podConfig podConfiguration) {
+			netConfig := newNetworkAttachmentConfig(netConfigParams)
+
 			netConfig.namespace = f.Namespace.Name
 			podConfig.namespace = f.Namespace.Name
 
@@ -98,7 +101,7 @@ var _ = Describe("Multi Homing", func() {
 		},
 			table.Entry(
 				"when attaching to an L3 - routed - network",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:     netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode),
 					name:     secondaryNetworkName,
 					topology: "layer3",
@@ -110,7 +113,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an L3 - routed - network with IPv6 network",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:     netCIDR(secondaryIPv6CIDR, netPrefixLengthIPv6PerNode),
 					name:     secondaryNetworkName,
 					topology: "layer3",
@@ -122,7 +125,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an L2 - switched - network",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:     secondaryFlatL2NetworkCIDR,
 					name:     secondaryNetworkName,
 					topology: "layer2",
@@ -134,7 +137,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an L2 - switched - network featuring `excludeCIDR`s",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:         secondaryFlatL2NetworkCIDR,
 					name:         secondaryNetworkName,
 					topology:     "layer2",
@@ -147,7 +150,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an L2 - switched - network without IPAM",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer2",
 				},
@@ -158,7 +161,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an L2 - switched - network with an IPv6 subnet",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:     secondaryIPv6CIDR,
 					name:     secondaryNetworkName,
 					topology: "layer2",
@@ -170,7 +173,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an L2 - switched - network with a dual stack configuration",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:     strings.Join([]string{secondaryFlatL2NetworkCIDR, secondaryIPv6CIDR}, ","),
 					name:     secondaryNetworkName,
 					topology: "layer2",
@@ -182,7 +185,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an localnet - switched - network",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:     secondaryLocalnetNetworkCIDR,
 					name:     secondaryNetworkName,
 					topology: "localnet",
@@ -195,7 +198,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an Localnet - switched - network featuring `excludeCIDR`s",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:         secondaryLocalnetNetworkCIDR,
 					name:         secondaryNetworkName,
 					topology:     "localnet",
@@ -209,7 +212,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an localnet - switched - network without IPAM",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "localnet",
 					vlanID:   localnetVLANID,
@@ -221,7 +224,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an localnet - switched - network with an IPv6 subnet",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:     secondaryIPv6CIDR,
 					name:     secondaryNetworkName,
 					topology: "localnet",
@@ -234,7 +237,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"when attaching to an L2 - switched - network with a dual stack configuration",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					cidr:     strings.Join([]string{secondaryLocalnetNetworkCIDR, secondaryIPv6CIDR}, ","),
 					name:     secondaryNetworkName,
 					topology: "localnet",
@@ -261,10 +264,25 @@ var _ = Describe("Multi Homing", func() {
 
 		table.DescribeTable(
 			"can communicate over the secondary network",
-			func(netConfig networkAttachmentConfig, clientPodConfig podConfiguration, serverPodConfig podConfiguration) {
+			func(netConfigParams networkAttachmentConfigParams, clientPodConfig podConfiguration, serverPodConfig podConfiguration) {
+				netConfig := newNetworkAttachmentConfig(netConfigParams)
+
 				netConfig.namespace = f.Namespace.Name
 				clientPodConfig.namespace = f.Namespace.Name
 				serverPodConfig.namespace = f.Namespace.Name
+
+				if netConfig.topology == "localnet" {
+					By("setting up the localnet underlay")
+					nodes := ovsPods(cs)
+					Expect(nodes).NotTo(BeEmpty())
+					defer func() {
+						By("tearing down the localnet underlay")
+						Expect(teardownUnderlay(nodes)).To(Succeed())
+					}()
+
+					const secondaryInterfaceName = "eth1"
+					Expect(setupUnderlay(nodes, secondaryInterfaceName, netConfig)).To(Succeed())
+				}
 
 				By("creating the attachment configuration")
 				_, err := nadClient.NetworkAttachmentDefinitions(f.Namespace.Name).Create(
@@ -344,7 +362,7 @@ var _ = Describe("Multi Homing", func() {
 			},
 			table.Entry(
 				"can communicate over an L2 secondary network when the pods are scheduled in different nodes",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer2",
 					cidr:     secondaryNetworkCIDR,
@@ -363,7 +381,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"can communicate over an L2 - switched - secondary network with `excludeCIDR`s",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:         secondaryNetworkName,
 					topology:     "layer2",
 					cidr:         secondaryNetworkCIDR,
@@ -381,7 +399,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"can communicate over an L3 - routed - secondary network",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer3",
 					cidr:     netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode),
@@ -398,7 +416,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"can communicate over an L3 - routed - secondary network with IPv6 subnet",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer3",
 					cidr:     netCIDR(secondaryIPv6CIDR, netPrefixLengthIPv6PerNode),
@@ -415,7 +433,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"can communicate over an L3 - routed - secondary network with a dual stack configuration",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer3",
 					cidr:     strings.Join([]string{netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode), netCIDR(secondaryIPv6CIDR, netPrefixLengthIPv6PerNode)}, ","),
@@ -434,7 +452,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"can communicate over an L2 - switched - secondary network without IPAM",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer2",
 				},
@@ -452,7 +470,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"can communicate over an L2 secondary network without IPAM, with static IPs configured via network selection elements",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer2",
 				},
@@ -474,7 +492,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"can communicate over an L2 secondary network with an IPv6 subnet when pods are scheduled in different nodes",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer2",
 					cidr:     secondaryIPv6CIDR,
@@ -493,7 +511,7 @@ var _ = Describe("Multi Homing", func() {
 			),
 			table.Entry(
 				"can communicate over an L2 secondary network with a dual stack configuration",
-				networkAttachmentConfig{
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "layer2",
 					cidr:     strings.Join([]string{secondaryFlatL2NetworkCIDR, secondaryIPv6CIDR}, ","),
@@ -511,16 +529,17 @@ var _ = Describe("Multi Homing", func() {
 				},
 			),
 			table.Entry(
-				"can communicate over an Localnet secondary network when the pods are scheduled on the same node",
-				networkAttachmentConfig{
+				"can communicate over an localnet secondary network when the pods are scheduled on different nodes",
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "localnet",
 					cidr:     secondaryLocalnetNetworkCIDR,
+					vlanID:   localnetVLANID,
 				},
 				podConfiguration{
 					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
 					name:         clientPodName,
-					nodeSelector: map[string]string{nodeHostnameKey: workerTwoNodeName},
+					nodeSelector: map[string]string{nodeHostnameKey: workerOneNodeName},
 				},
 				podConfiguration{
 					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
@@ -530,15 +549,16 @@ var _ = Describe("Multi Homing", func() {
 				},
 			),
 			table.Entry(
-				"can communicate over an Localnet secondary network without IPAM when the pods are scheduled on the same node",
-				networkAttachmentConfig{
+				"can communicate over an localnet secondary network without IPAM when the pods are scheduled on different nodes",
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "localnet",
+					vlanID:   localnetVLANID,
 				},
 				podConfiguration{
 					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
 					name:         clientPodName,
-					nodeSelector: map[string]string{nodeHostnameKey: workerTwoNodeName},
+					nodeSelector: map[string]string{nodeHostnameKey: workerOneNodeName},
 					isPrivileged: true,
 				},
 				podConfiguration{
@@ -550,10 +570,11 @@ var _ = Describe("Multi Homing", func() {
 				},
 			),
 			table.Entry(
-				"can communicate over an localnet secondary network without IPAM when the pods are scheduled on the same node, with static IPs configured via network selection elements",
-				networkAttachmentConfig{
+				"can communicate over an localnet secondary network without IPAM when the pods are scheduled on different nodes, with static IPs configured via network selection elements",
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "localnet",
+					vlanID:   localnetVLANID,
 				},
 				podConfiguration{
 					attachments: []nadapi.NetworkSelectionElement{{
@@ -561,7 +582,7 @@ var _ = Describe("Multi Homing", func() {
 						IPRequest: []string{clientIP},
 					}},
 					name:         clientPodName,
-					nodeSelector: map[string]string{nodeHostnameKey: workerTwoNodeName},
+					nodeSelector: map[string]string{nodeHostnameKey: workerOneNodeName},
 				},
 				podConfiguration{
 					attachments: []nadapi.NetworkSelectionElement{{
@@ -574,16 +595,17 @@ var _ = Describe("Multi Homing", func() {
 				},
 			),
 			table.Entry(
-				"can communicate over an localnet secondary network with an IPv6 subnet when pods are scheduled on the same node",
-				networkAttachmentConfig{
+				"can communicate over an localnet secondary network with an IPv6 subnet when pods are scheduled on different nodes",
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "localnet",
 					cidr:     secondaryIPv6CIDR,
+					vlanID:   localnetVLANID,
 				},
 				podConfiguration{
 					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
 					name:         clientPodName,
-					nodeSelector: map[string]string{nodeHostnameKey: workerTwoNodeName},
+					nodeSelector: map[string]string{nodeHostnameKey: workerOneNodeName},
 				},
 				podConfiguration{
 					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
@@ -593,16 +615,17 @@ var _ = Describe("Multi Homing", func() {
 				},
 			),
 			table.Entry(
-				"can communicate over an localnet secondary network with a dual stack configuration when pods are scheduled on the same node",
-				networkAttachmentConfig{
+				"can communicate over an localnet secondary network with a dual stack configuration when pods are scheduled on different nodes",
+				networkAttachmentConfigParams{
 					name:     secondaryNetworkName,
 					topology: "localnet",
 					cidr:     strings.Join([]string{secondaryLocalnetNetworkCIDR, secondaryIPv6CIDR}, ","),
+					vlanID:   localnetVLANID,
 				},
 				podConfiguration{
 					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
 					name:         clientPodName,
-					nodeSelector: map[string]string{nodeHostnameKey: workerTwoNodeName},
+					nodeSelector: map[string]string{nodeHostnameKey: workerOneNodeName},
 				},
 				podConfiguration{
 					attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName}},
@@ -616,6 +639,7 @@ var _ = Describe("Multi Homing", func() {
 		Context("multi-network policies", func() {
 			const (
 				generatedNamespaceNamePrefix = "pepe"
+				blockedServerStaticIP        = "192.168.200.30"
 			)
 			var extraNamespace *v1.Namespace
 
@@ -650,7 +674,9 @@ var _ = Describe("Multi Homing", func() {
 
 			table.DescribeTable(
 				"multi-network policies configure traffic allow lists",
-				func(netConfig networkAttachmentConfig, allowedClientPodConfig podConfiguration, blockedClientPodConfig podConfiguration, serverPodConfig podConfiguration, policy *mnpapi.MultiNetworkPolicy) {
+				func(netConfigParams networkAttachmentConfigParams, allowedClientPodConfig podConfiguration, blockedClientPodConfig podConfiguration, serverPodConfig podConfiguration, policy *mnpapi.MultiNetworkPolicy) {
+					netConfig := newNetworkAttachmentConfig(netConfigParams)
+
 					blockedClientPodNamespace := f.Namespace.Name
 					if blockedClientPodConfig.requiresExtraNamespace {
 						blockedClientPodNamespace = extraNamespace.Name
@@ -665,6 +691,19 @@ var _ = Describe("Multi Homing", func() {
 
 					serverPodConfig.namespace = f.Namespace.Name
 
+					if netConfig.topology == "localnet" {
+						By("setting up the localnet underlay")
+						nodes := ovsPods(cs)
+						Expect(nodes).NotTo(BeEmpty())
+						defer func() {
+							By("tearing down the localnet underlay")
+							Expect(teardownUnderlay(nodes)).To(Succeed())
+						}()
+
+						const secondaryInterfaceName = "eth1"
+						Expect(setupUnderlay(nodes, secondaryInterfaceName, netConfig)).To(Succeed())
+					}
+
 					for _, ns := range []v1.Namespace{*f.Namespace, *extraNamespace} {
 						stepInfo := fmt.Sprintf("creating the attachment configuration for namespace %q", ns.Name)
 						By(stepInfo)
@@ -677,6 +716,10 @@ var _ = Describe("Multi Homing", func() {
 						Expect(err).NotTo(HaveOccurred())
 					}
 
+					By("sitting on our hands for a couple secs we give the controller time to sync all NADs before provisioning policies and pods")
+					// TODO: this is temporary. We hope to eventually sync pods & multi-net policies on NAD C/U/D ops
+					time.Sleep(3 * time.Second)
+
 					kickstartPod(cs, serverPodConfig)
 					kickstartPod(cs, allowedClientPodConfig)
 					kickstartPod(cs, blockedClientPodConfig)
@@ -684,10 +727,12 @@ var _ = Describe("Multi Homing", func() {
 					By("asserting the server pod has an IP from the configured range")
 					serverIP, err := podIPForAttachment(cs, serverPodConfig.namespace, serverPodConfig.name, netConfig.name, 0)
 					Expect(err).NotTo(HaveOccurred())
-					By(fmt.Sprintf("asserting the server pod IP %v is from the configured range %v/%v", serverIP, netConfig.cidr, netPrefixLengthPerNode))
-					subnet, err := getNetCIDRSubnet(netConfig.cidr)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(inRange(subnet, serverIP)).To(Succeed())
+					if netConfig.cidr != "" {
+						By(fmt.Sprintf("asserting the server pod IP %v is from the configured range %v/%v", serverIP, netConfig.cidr, netPrefixLengthPerNode))
+						subnet, err := getNetCIDRSubnet(netConfig.cidr)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(inRange(subnet, serverIP)).To(Succeed())
+					}
 
 					if doesPolicyFeatAnIPBlock(policy) {
 						blockedIP, err := podIPForAttachment(cs, f.Namespace.Name, blockedClientPodConfig.name, netConfig.name, 0)
@@ -711,11 +756,11 @@ var _ = Describe("Multi Homing", func() {
 					By("asserting the *blocked-client* pod **cannot** contact the server pod exposed endpoint")
 					Expect(connectToServer(blockedClientPodConfig, serverIP, port)).To(
 						MatchError(
-							MatchRegexp("Connection timeout after 200[0-1] ms")))
+							MatchRegexp("Connection timeout after 200[0-9] ms")))
 				},
 				table.Entry(
 					"for a pure L2 overlay when the multi-net policy describes the allow-list using pod selectors",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:     secondaryNetworkName,
 						topology: "layer2",
 						cidr:     secondaryFlatL2NetworkCIDR,
@@ -752,7 +797,7 @@ var _ = Describe("Multi Homing", func() {
 				),
 				table.Entry(
 					"for a routed topology when the multi-net policy describes the allow-list using pod selectors",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:     secondaryNetworkName,
 						topology: "layer3",
 						cidr:     netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode),
@@ -789,7 +834,7 @@ var _ = Describe("Multi Homing", func() {
 				),
 				table.Entry(
 					"for a localnet topology when the multi-net policy describes the allow-list using pod selectors",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:     secondaryNetworkName,
 						topology: "localnet",
 						cidr:     secondaryLocalnetNetworkCIDR,
@@ -826,7 +871,7 @@ var _ = Describe("Multi Homing", func() {
 				),
 				table.Entry(
 					"for a pure L2 overlay when the multi-net policy describes the allow-list using IPBlock",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:     secondaryNetworkName,
 						topology: "layer2",
 						cidr:     secondaryFlatL2NetworkCIDR,
@@ -858,7 +903,7 @@ var _ = Describe("Multi Homing", func() {
 				),
 				table.Entry(
 					"for a routed topology when the multi-net policy describes the allow-list using IPBlock",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:     secondaryNetworkName,
 						topology: "layer3",
 						cidr:     netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode),
@@ -890,7 +935,7 @@ var _ = Describe("Multi Homing", func() {
 				),
 				table.Entry(
 					"for a localnet topology when the multi-net policy describes the allow-list using IPBlock",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:     secondaryNetworkName,
 						topology: "localnet",
 						cidr:     secondaryLocalnetNetworkCIDR,
@@ -922,7 +967,7 @@ var _ = Describe("Multi Homing", func() {
 				),
 				table.Entry(
 					"for a pure L2 overlay when the multi-net policy describes the allow-list via namespace selectors",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:        secondaryNetworkName,
 						topology:    "layer2",
 						cidr:        secondaryFlatL2NetworkCIDR,
@@ -956,7 +1001,7 @@ var _ = Describe("Multi Homing", func() {
 				),
 				table.Entry(
 					"for a routed topology when the multi-net policy describes the allow-list via namespace selectors",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:        secondaryNetworkName,
 						topology:    "layer3",
 						cidr:        netCIDR(secondaryNetworkCIDR, netPrefixLengthPerNode),
@@ -990,7 +1035,7 @@ var _ = Describe("Multi Homing", func() {
 				),
 				table.Entry(
 					"for a localnet topology when the multi-net policy describes the allow-list via namespace selectors",
-					networkAttachmentConfig{
+					networkAttachmentConfigParams{
 						name:        secondaryNetworkName,
 						topology:    "localnet",
 						cidr:        secondaryLocalnetNetworkCIDR,
@@ -1022,6 +1067,39 @@ var _ = Describe("Multi Homing", func() {
 						port,
 					),
 				),
+
+				table.Entry(
+					"for an IPAMless pure L2 overlay when the multi-net policy describes the allow-list using IPBlock",
+					networkAttachmentConfigParams{
+						name:     secondaryNetworkName,
+						topology: "layer2",
+					},
+					podConfiguration{
+						attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName, IPRequest: []string{clientIP}}},
+						name:        allowedClient(clientPodName),
+					},
+					podConfiguration{
+						attachments: []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName, IPRequest: []string{blockedServerStaticIP + "/24"}}},
+						name:        blockedClient(clientPodName),
+					},
+					podConfiguration{
+						attachments:  []nadapi.NetworkSelectionElement{{Name: secondaryNetworkName, IPRequest: []string{staticServerIP}}},
+						name:         podName,
+						containerCmd: httpServerContainerCmd(port),
+						labels:       map[string]string{"app": "stuff-doer"},
+					},
+					multiNetIngressLimitingIPBlockPolicy(
+						secondaryNetworkName,
+						metav1.LabelSelector{
+							MatchLabels: map[string]string{"app": "stuff-doer"},
+						},
+						mnpapi.IPBlock{
+							CIDR:   "192.168.200.0/24",
+							Except: []string{blockedServerStaticIP},
+						},
+						port,
+					),
+				),
 			)
 		})
 	})
@@ -1034,6 +1112,7 @@ var _ = Describe("Multi Homing", func() {
 				newAttachmentConfigWithOverriddenName(secondaryNetworkName, f.Namespace.Name, secondaryNetworkName, "layer2", secondaryFlatL2NetworkCIDR),
 				newAttachmentConfigWithOverriddenName(secondaryNetworkName+"-alias", f.Namespace.Name, secondaryNetworkName, "layer2", secondaryFlatL2NetworkCIDR),
 			}
+
 			for i := range netAttachDefs {
 				netConfig := netAttachDefs[i]
 				By("creating the attachment configuration")
@@ -1044,6 +1123,10 @@ var _ = Describe("Multi Homing", func() {
 				)
 				Expect(err).NotTo(HaveOccurred())
 			}
+
+			By("sitting on our hands for a couple secs we give the controller time to sync all NADs before provisioning policies and pods")
+			// TODO: this is temporary. We hope to eventually sync pods & multi-net policies on NAD C/U/D ops
+			time.Sleep(3 * time.Second)
 
 			podConfig := podConfiguration{
 				attachments: []nadapi.NetworkSelectionElement{

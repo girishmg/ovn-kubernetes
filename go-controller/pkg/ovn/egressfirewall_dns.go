@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
@@ -64,7 +64,7 @@ func NewEgressDNS(addressSetFactory addressset.AddressSetFactory, controllerName
 		addressSetFactory: addressSetFactory,
 		controllerName:    controllerName,
 
-		added:          make(chan struct{}),
+		added:          make(chan struct{}, 1),
 		deleted:        make(chan string, 1),
 		stopChan:       make(chan struct{}),
 		controllerStop: controllerStop,

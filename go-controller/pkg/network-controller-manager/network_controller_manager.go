@@ -12,7 +12,8 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
+	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	nad "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/network-attach-def-controller"
@@ -68,14 +69,8 @@ func (cm *networkControllerManager) NewNetworkController(nInfo util.NetInfo) (na
 	case ovntypes.Layer3Topology:
 		return ovn.NewSecondaryLayer3NetworkController(cnci, nInfo), nil
 	case ovntypes.Layer2Topology:
-		if config.OVNKubernetesFeature.EnableInterconnect {
-			return nil, fmt.Errorf("topology type %s not supported when Interconnect feature is enabled", topoType)
-		}
 		return ovn.NewSecondaryLayer2NetworkController(cnci, nInfo), nil
 	case ovntypes.LocalnetTopology:
-		if config.OVNKubernetesFeature.EnableInterconnect {
-			return nil, fmt.Errorf("topology type %s not supported when Interconnect feature is enabled", topoType)
-		}
 		return ovn.NewSecondaryLocalnetNetworkController(cnci, nInfo), nil
 	}
 	return nil, fmt.Errorf("topology type %s not supported", topoType)
@@ -177,7 +172,7 @@ func (cm *networkControllerManager) CleanupDeletedNetworks(allControllers []nad.
 	return nil
 }
 
-// NewNetworkControllerManager creates a new OVN controller manager to manage all the controller for all networks
+// NewNetworkControllerManager creates a new ovnkube controller manager to manage all the controller for all networks
 func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, wf *factory.WatchFactory,
 	libovsdbOvnNBClient libovsdbclient.Client, libovsdbOvnSBClient libovsdbclient.Client,
 	recorder record.EventRecorder, wg *sync.WaitGroup) (*networkControllerManager, error) {
@@ -191,6 +186,7 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, identity string, 
 			EgressFirewallClient: ovnClient.EgressFirewallClient,
 			CloudNetworkClient:   ovnClient.CloudNetworkClient,
 			EgressServiceClient:  ovnClient.EgressServiceClient,
+			APBRouteClient:       ovnClient.AdminPolicyRouteClient,
 		},
 		stopChan:     make(chan struct{}),
 		watchFactory: wf,
@@ -240,8 +236,8 @@ func (cm *networkControllerManager) configureSvcTemplateSupport() {
 }
 
 func (cm *networkControllerManager) configureMetrics(stopChan <-chan struct{}) {
-	metrics.RegisterMasterPerformance(cm.nbClient)
-	metrics.RegisterMasterFunctional()
+	metrics.RegisterOVNKubeControllerPerformance(cm.nbClient)
+	metrics.RegisterOVNKubeControllerFunctional()
 	metrics.RunTimestamp(stopChan, cm.sbClient, cm.nbClient)
 	metrics.MonitorIPSec(cm.nbClient)
 }
@@ -284,7 +280,11 @@ func (cm *networkControllerManager) newCommonNetworkControllerInfo() (*ovn.Commo
 
 // initDefaultNetworkController creates the controller for default network
 func (cm *networkControllerManager) initDefaultNetworkController() error {
-	defaultController, err := ovn.NewDefaultNetworkController(cm.newCommonNetworkControllerInfo())
+	cnci, err := cm.newCommonNetworkControllerInfo()
+	if err != nil {
+		return fmt.Errorf("failed to create common network controller info: %w", err)
+	}
+	defaultController, err := ovn.NewDefaultNetworkController(cnci)
 	if err != nil {
 		return err
 	}
@@ -295,28 +295,68 @@ func (cm *networkControllerManager) initDefaultNetworkController() error {
 	return nil
 }
 
-// Start the network controller manager
+// Start the ovnkube controller
 func (cm *networkControllerManager) Start(ctx context.Context) error {
-	klog.Info("Starting the network controller manager")
+	klog.Info("Starting the ovnkube controller")
 
-	// Make sure that the NCM zone matches with the Noruthbound db zone.
+	// Make sure that the ovnkube-controller zone matches with the Northbound db zone.
 	// Wait for 300s before giving up
+	maxTimeout := 300 * time.Second
+	klog.Infof("Waiting up to %s for NBDB zone to match: %s", maxTimeout, config.Default.Zone)
+	start := time.Now()
 	var zone string
-	err := wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
-		zone, err := util.GetNBZone(cm.nbClient)
-		if err != nil {
-			return false, fmt.Errorf("error getting the zone name from the OVN Northbound db : %w", err)
+	var err1 error
+	err := wait.PollUntilContextTimeout(ctx, 250*time.Millisecond, maxTimeout, true, func(ctx context.Context) (bool, error) {
+		zone, err1 = libovsdbutil.GetNBZone(cm.nbClient)
+		if err1 != nil {
+			return false, nil
 		}
-
 		if config.Default.Zone != zone {
-			return false, fmt.Errorf("network controller manager zone %s mismatch with the Northbound db zone %s", config.Default.Zone, zone)
+			err1 = fmt.Errorf("config zone %s different from NBDB zone %s", config.Default.Zone, zone)
+			return false, nil
 		}
 		return true, nil
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to start default network controller - OVN Nortboubd db zone %s doesn't match with the configured zone %s : err - %w", zone, config.Default.Zone, err)
+		return fmt.Errorf("failed to start default ovnkube-controller - OVN NBDB zone %s does not match the configured zone %q: errors: %v, %v",
+			zone, config.Default.Zone, err, err1)
 	}
+	klog.Infof("NBDB zone sync took: %s", time.Since(start))
+
+	err = cm.watchFactory.Start()
+	if err != nil {
+		return err
+	}
+
+	// Wait for one node to have the zone we want to manage, otherwise there is no point in configuring NBDB.
+	// Really this covers a use case where a node is going from local -> remote, but has not yet annotated itself.
+	// In this case ovnkube-controller on this remote node will treat the node as remote, and then once the annotation
+	// appears will convert it to local, which may or may not clean up DB resources correctly.
+	klog.Infof("Waiting up to %s for a node to have %q zone", maxTimeout, config.Default.Zone)
+	start = time.Now()
+	err = wait.PollUntilContextTimeout(ctx, 250*time.Millisecond, maxTimeout, true, func(ctx context.Context) (bool, error) {
+		nodes, err := cm.watchFactory.GetNodes()
+		if err != nil {
+			klog.Errorf("Unable to get nodes from informer while waiting for node zone sync")
+			return false, nil
+		}
+		if len(nodes) == 0 {
+			klog.Infof("No nodes in cluster: waiting for a node to have %q zone is not needed", config.Default.Zone)
+			return true, nil
+		}
+		for _, node := range nodes {
+			if util.GetNodeZone(node) == config.Default.Zone {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start default network controller - while waiting for any node to have zone: %q, error: %v",
+			config.Default.Zone, err)
+	}
+	klog.Infof("Waiting for node in zone sync took: %s", time.Since(start))
 
 	cm.configureMetrics(cm.stopChan)
 
@@ -339,11 +379,6 @@ func (cm *networkControllerManager) Start(ctx context.Context) error {
 		metrics.GetConfigDurationRecorder().Run(cm.nbClient, cm.kube, 10, time.Second*5, cm.stopChan)
 	}
 	cm.podRecorder.Run(cm.sbClient, cm.stopChan)
-
-	err = cm.watchFactory.Start()
-	if err != nil {
-		return err
-	}
 
 	err = cm.initDefaultNetworkController()
 	if err != nil {

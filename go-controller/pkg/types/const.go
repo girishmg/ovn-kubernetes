@@ -52,8 +52,6 @@ const (
 	OVNLocalnetSwitch = "ovn_localnet_switch"
 	// types.OVNLocalnetPort is the name of localnet topology localnet port
 	OVNLocalnetPort = "ovn_localnet_port"
-	// Local Bridge used for localnet topology network access
-	LocalNetBridgeName = "br-localnet"
 
 	TransitSwitch               = "transit_switch"
 	TransitSwitchToRouterPrefix = "tstor-"
@@ -72,6 +70,14 @@ const (
 	// Default deny acl rule priority
 	DefaultDenyPriority = 1000
 
+	// ACL Tiers
+	// Tier 0 is currently un-used and is a placeholder tier for future use cases (can be renamed when we have a use for it).
+	// NOTE: When we upgrade from an OVN version without tiers to the new version with
+	// tiers, all values in the new ACL.Tier column will be set to 0 a.k.a placeholder tier
+	PlaceHolderACLTier = 0
+	// Default Tier for all ACLs
+	DefaultACLTier = 2
+
 	// priority of logical router policies on the OVNClusterRouter
 	EgressFirewallStartPriority           = 10000
 	MinimumReservedEgressFirewallPriority = 2000
@@ -83,6 +89,7 @@ const (
 	DefaultNoRereoutePriority             = 102
 	EgressSVCReroutePriority              = 101
 	EgressIPReroutePriority               = 100
+	EgressLiveMigrationReroutePiority     = 10
 
 	V6NodeLocalNATSubnet           = "fd99::/64"
 	V6NodeLocalNATSubnetPrefix     = 64
@@ -191,4 +198,17 @@ const (
 	PrimaryIDKey = OvnK8sPrefix + "/id"
 
 	OvnDefaultZone = "global"
+
+	// EgressService "reserved" hosts - when set on an EgressService they have a special meaning
+
+	EgressServiceNoHost     = ""    // set on services with no allocated node
+	EgressServiceNoSNATHost = "ALL" // set on services with sourceIPBy=Network
+
+	// MaxLogicalPortTunnelKey is maximum tunnel key that can be requested for a
+	// Logical Switch or Router Port
+	MaxLogicalPortTunnelKey = 32767
+
+	// InformerSyncTimeout is used to wait from the initial informer cache sync.
+	// It allows ~4 list() retries with the default reflector exponential backoff config
+	InformerSyncTimeout = 20 * time.Second
 )

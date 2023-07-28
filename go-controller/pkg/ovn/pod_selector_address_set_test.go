@@ -3,17 +3,19 @@ package ovn
 import (
 	"context"
 	"fmt"
+	"net"
+	"runtime"
+	"time"
+
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/extensions/table"
 	"github.com/onsi/gomega"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
-	"net"
-	"time"
 
 	v1 "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
@@ -81,7 +83,7 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			},
 		)
 		for _, testPod := range pods {
-			testPod.populateLogicalSwitchCache(fakeOvn, getLogicalSwitchUUID(fakeOvn.controller.nbClient, nodeName))
+			testPod.populateLogicalSwitchCache(fakeOvn)
 		}
 		var err error
 		if namespaces != nil {
@@ -141,10 +143,9 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 	})
 	ginkgo.It("creates one address set for multiple users with the same selector", func() {
 		namespace1 := *newNamespace(namespaceName1)
-		namespace2 := *newNamespace(namespaceName2)
 		networkPolicy1 := getMatchLabelsNetworkPolicy(netPolicyName1, namespace1.Name,
 			"", "label1", true, true)
-		networkPolicy2 := getMatchLabelsNetworkPolicy(netPolicyName2, namespace2.Name,
+		networkPolicy2 := getMatchLabelsNetworkPolicy(netPolicyName2, namespace1.Name,
 			"", "label1", true, true)
 		startOvn(initialDB, []v1.Namespace{namespace1}, []knet.NetworkPolicy{*networkPolicy1, *networkPolicy2},
 			nil, nil)
@@ -319,6 +320,7 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			map[string]string{
 				"apply-after-lb": "true",
 			},
+			types.DefaultACLTier,
 		)
 		netpolACL.UUID = "netpolACL-UUID"
 		refPodSelIDs := getPodSelectorAddrSetDbIDs("pasName2", DefaultNetworkControllerName)
@@ -337,6 +339,7 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 			map[string]string{
 				"apply-after-lb": "true",
 			},
+			types.DefaultACLTier,
 		)
 		podSelACL.UUID = "podSelACL-UUID"
 
@@ -467,6 +470,34 @@ var _ = ginkgo.Describe("OVN PodSelectorAddressSet", func() {
 		// IP should be deleted from the address set on delete event, since the new pod with the same ip
 		// should not be present in given address set
 		eventuallyExpectEmptyAddressSetsExist(fakeOvn, peer, namespace1.Name)
+	})
+	ginkgo.It("cleans up retryFramework resources", func() {
+		namespace1 := *newNamespace(namespaceName1)
+		namespace1.Labels = map[string]string{"key": "value"}
+		startOvn(initialDB, []v1.Namespace{namespace1}, nil, nil, nil)
+		selector := &metav1.LabelSelector{
+			MatchLabels: map[string]string{"key": "value"},
+		}
+
+		// let the system settle down before counting goroutines
+		time.Sleep(100 * time.Millisecond)
+		goroutinesNumInit := runtime.NumGoroutine()
+		// namespace selector will be run because it is not empty.
+		// one namespace should match the label and start a pod watchFactory.
+		// that gives us 2 retryFrameworks, so 2 periodicallyRetryResources goroutines.
+		peerASKey, _, _, err := fakeOvn.controller.EnsurePodSelectorAddressSet(
+			selector, selector, namespaceName1, "backRef")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		gomega.Eventually(func() int {
+			return runtime.NumGoroutine()
+		}).Should(gomega.Equal(goroutinesNumInit + 2))
+
+		err = fakeOvn.controller.DeletePodSelectorAddressSet(peerASKey, "backRef")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		// expect goroutines number to get back
+		gomega.Eventually(func() int {
+			return runtime.NumGoroutine()
+		}).Should(gomega.Equal(goroutinesNumInit))
 	})
 })
 

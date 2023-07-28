@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
@@ -20,7 +21,8 @@ import (
 	egressservicefake "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressservice/v1/apis/clientset/versioned/fake"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/sbdb"
@@ -28,6 +30,7 @@ import (
 	libovsdbtest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing/libovsdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 	kapi "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
@@ -295,7 +298,23 @@ func addNodeportLBs(fexec *ovntest.FakeExec, nodeName, tcpLBUUID, udpLBUUID, sct
 }
 */
 
-func addNodeLogicalFlows(testData []libovsdbtest.TestData, expectedOVNClusterRouter *nbdb.LogicalRouter, expectedNodeSwitch *nbdb.LogicalSwitch, expectedClusterRouterPortGroup, expectedClusterPortGroup *nbdb.PortGroup, node *tNode) []libovsdbtest.TestData {
+func addNodeLogicalFlows(testData []libovsdbtest.TestData, expectedOVNClusterRouter *nbdb.LogicalRouter,
+	expectedNodeSwitch *nbdb.LogicalSwitch, expectedClusterRouterPortGroup, expectedClusterPortGroup *nbdb.PortGroup,
+	node *tNode) []libovsdbtest.TestData {
+	return addNodeLogicalFlowsHelper(testData, expectedOVNClusterRouter, expectedNodeSwitch, expectedClusterRouterPortGroup,
+		expectedClusterPortGroup, node, false)
+}
+
+func addNodeLogicalFlowsWithServiceController(testData []libovsdbtest.TestData, expectedOVNClusterRouter *nbdb.LogicalRouter,
+	expectedNodeSwitch *nbdb.LogicalSwitch, expectedClusterRouterPortGroup, expectedClusterPortGroup *nbdb.PortGroup,
+	node *tNode, svcTemplateSupport bool) []libovsdbtest.TestData {
+	return addNodeLogicalFlowsHelper(testData, expectedOVNClusterRouter, expectedNodeSwitch, expectedClusterRouterPortGroup,
+		expectedClusterPortGroup, node, svcTemplateSupport)
+}
+
+func addNodeLogicalFlowsHelper(testData []libovsdbtest.TestData, expectedOVNClusterRouter *nbdb.LogicalRouter,
+	expectedNodeSwitch *nbdb.LogicalSwitch, expectedClusterRouterPortGroup, expectedClusterPortGroup *nbdb.PortGroup,
+	node *tNode, serviceControllerEnabled bool) []libovsdbtest.TestData {
 
 	lrpName := types.RouterToSwitchPrefix + node.Name
 	chassisName := node.SystemID
@@ -312,6 +331,15 @@ func addNodeLogicalFlows(testData []libovsdbtest.TestData, expectedOVNClusterRou
 		Networks:       []string{node.NodeGWIP},
 		GatewayChassis: []string{chassisName + "-UUID"},
 	})
+	if serviceControllerEnabled {
+		testData = append(testData, &nbdb.ChassisTemplateVar{
+			UUID:    chassisName + "ChassisTemplateVar-UUID",
+			Chassis: chassisName,
+			Variables: map[string]string{
+				"NODEIP_IPv4_0": node.NodeIP,
+			},
+		})
+	}
 
 	expectedOVNClusterRouter.Ports = append(expectedOVNClusterRouter.Ports, types.RouterToSwitchPrefix+node.Name+"-UUID")
 
@@ -321,6 +349,7 @@ func addNodeLogicalFlows(testData []libovsdbtest.TestData, expectedOVNClusterRou
 		Type: "router",
 		Options: map[string]string{
 			"router-port": types.RouterToSwitchPrefix + node.Name,
+			"arp_proxy":   kubevirt.ComposeARPProxyLSPOption(),
 		},
 		Addresses: []string{"router"},
 	})
@@ -883,7 +912,7 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 
 		nbClient        libovsdbclient.Client
 		sbClient        libovsdbclient.Client
-		libovsdbCleanup *libovsdbtest.Cleanup
+		libovsdbCleanup *libovsdbtest.Context
 
 		dbSetup        libovsdbtest.TestSetup
 		node1          tNode
@@ -910,9 +939,10 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 	)
 
 	const (
-		clusterIPNet string = "10.1.0.0"
-		clusterCIDR  string = clusterIPNet + "/16"
-		vlanID              = 1024
+		clusterIPNet  string = "10.1.0.0"
+		clusterCIDR   string = clusterIPNet + "/16"
+		clusterv6CIDR string = "aef0::/48"
+		vlanID               = 1024
 	)
 
 	ginkgo.BeforeEach(func() {
@@ -948,6 +978,13 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 			NodeMgmtPortMAC:      "0a:58:0a:01:01:02",
 			DnatSnatIP:           "169.254.0.1",
 		}
+		_, clusterIPNet, err := net.ParseCIDR(clusterCIDR)
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+		config.Default.ClusterSubnets = []config.CIDRNetworkEntry{{
+			CIDR:             clusterIPNet,
+			HostSubnetLength: 24,
+		}}
 
 		expectedClusterLBGroup = newLoadBalancerGroup(types.ClusterLBGroupName)
 		expectedSwitchLBGroup = newLoadBalancerGroup(types.ClusterSwitchLBGroupName)
@@ -994,7 +1031,6 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 			EgressQoSClient:      egressQoSFakeClient,
 			EgressServiceClient:  egressServiceFakeClient,
 		}
-		var err error
 
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		nodeAnnotator = kube.NewNodeAnnotator(&kube.Kube{kubeFakeClient}, testNode.Name)
@@ -1046,7 +1082,8 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 
 		oc.SCTPSupport = true
 
-		expectedNBDatabaseState = addNodeLogicalFlows(nil, expectedOVNClusterRouter, expectedNodeSwitch, expectedClusterRouterPortGroup, expectedClusterPortGroup, &node1)
+		expectedNBDatabaseState = addNodeLogicalFlowsWithServiceController(nil, expectedOVNClusterRouter, expectedNodeSwitch,
+			expectedClusterRouterPortGroup, expectedClusterPortGroup, &node1, oc.svcTemplateSupport)
 	})
 
 	ginkgo.AfterEach(func() {
@@ -1383,20 +1420,18 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 			err = oc.syncGatewayLogicalNetwork(&testNode, l3GatewayConfig, []*net.IPNet{subnet}, nodeHostAddrs)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			// Delete the node's gateway Logical Router Port to force an error. But save
-			// it first so we can add it back to let the delete proceed after we know the
-			// retry was successful
-			gatewayRouter := types.GWRouterPrefix + node1.Name
-			lr := &nbdb.LogicalRouter{Name: gatewayRouter}
-			lrp := &nbdb.LogicalRouterPort{Name: types.GWRouterToJoinSwitchPrefix + gatewayRouter}
-			lrp, err = libovsdbops.GetLogicalRouterPort(nbClient, lrp)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			err = libovsdbops.DeleteLogicalRouterPorts(nbClient, lr, lrp)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			// inject transient problem, nbdb is down
+			oc.nbClient.Close()
+			gomega.Eventually(func() bool {
+				return oc.nbClient.Connected()
+			}).Should(gomega.BeFalse())
 
 			// Node delete will fail with Failed to delete node node1,
 			err = fakeClient.KubeClient.CoreV1().Nodes().Delete(context.TODO(), testNode.Name, metav1.DeleteOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			// sleep long enough for TransactWithRetry to fail, causing LS (and other rows related to node) delete to fail
+			time.Sleep(types.OVSDBTimeout + time.Second)
 
 			// check the retry entry for this node
 			ginkgo.By("retry entry: old obj should not be nil, new obj should be nil")
@@ -1407,13 +1442,74 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 				gomega.BeNil(),             // newObj should be nil
 			)
 
-			// Add the LRP back to allow the delete the continue
-			err = libovsdbops.CreateOrUpdateLogicalRouterPort(nbClient,
-				lr, lrp, nil, &lrp.MAC, &lrp.Networks, &lrp.ExternalIDs)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			// reconnect nbdb
+			connCtx, cancel := context.WithTimeout(context.Background(), types.OVSDBTimeout)
+			defer cancel()
+			resetNBClient(connCtx, oc.nbClient)
+
+			// reset backoff for immediate retry
 			retry.SetRetryObjWithNoBackoff(node1.Name, oc.retryNodes)
 			oc.retryNodes.RequestRetryObjs() // retry the failed entry
 
+			retry.CheckRetryObjectEventually(testNode.Name, false, oc.retryNodes)
+			return nil
+		}
+
+		err := app.Run([]string{
+			app.Name,
+			"-cluster-subnets=" + clusterCIDR,
+			"--init-gateways",
+			"--nodeport",
+		})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+
+	ginkgo.It("delete a partially constructed node", func() {
+		app.Action = func(ctx *cli.Context) error {
+			_, err := config.InitConfig(ctx, nil, nil)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			startFakeController(oc, wg)
+
+			subnet := ovntest.MustParseIPNet(node1.NodeSubnet)
+			err = oc.syncGatewayLogicalNetwork(&testNode, l3GatewayConfig, []*net.IPNet{subnet}, nodeHostAddrs)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			// Delete the node's gateway Logical Router Port to force node delete to handle a
+			// partially removed OVN DB
+			gatewayRouter := types.GWRouterPrefix + node1.Name
+			lr := &nbdb.LogicalRouter{Name: gatewayRouter}
+			lrp := &nbdb.LogicalRouterPort{Name: types.GWRouterToJoinSwitchPrefix + gatewayRouter}
+			lrp, err = libovsdbops.GetLogicalRouterPort(nbClient, lrp)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			err = libovsdbops.DeleteLogicalRouterPorts(nbClient, lr, lrp)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			_, err = libovsdbops.GetLogicalSwitch(nbClient, &nbdb.LogicalSwitch{Name: node1.Name})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			externalSwitch := types.ExternalSwitchPrefix + node1.Name
+			_, err = libovsdbops.GetLogicalSwitch(nbClient, &nbdb.LogicalSwitch{Name: externalSwitch})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			// Node delete should not fail
+			err = fakeClient.KubeClient.CoreV1().Nodes().Delete(context.TODO(), testNode.Name, metav1.DeleteOptions{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			gomega.Eventually(func() bool {
+				_, err := libovsdbops.GetLogicalSwitch(nbClient, &nbdb.LogicalSwitch{Name: node1.Name})
+				return errors.Is(err, libovsdbclient.ErrNotFound)
+			}, 10).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				_, err := libovsdbops.GetLogicalSwitch(nbClient, &nbdb.LogicalSwitch{Name: externalSwitch})
+				return errors.Is(err, libovsdbclient.ErrNotFound)
+			}, 10).Should(gomega.BeTrue())
+
+			gomega.Eventually(func() bool {
+				_, err = libovsdbops.GetLogicalRouter(nbClient, &nbdb.LogicalRouter{Name: gatewayRouter})
+				return errors.Is(err, libovsdbclient.ErrNotFound)
+			}, 10).Should(gomega.BeTrue())
+
+			// check the retry entry for this node
 			retry.CheckRetryObjectEventually(testNode.Name, false, oc.retryNodes)
 			return nil
 		}
@@ -1505,7 +1601,7 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			// Ensure that the node's switch is eventually created once the annotations
-			// are reconiled by the network cluster controller
+			// are reconciled by the network cluster controller
 			newNodeLS := &nbdb.LogicalSwitch{Name: newNode.Name}
 			gomega.Eventually(func() error {
 				_, err := libovsdbops.GetLogicalSwitch(nbClient, newNodeLS)
@@ -1518,6 +1614,69 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 		err := app.Run([]string{
 			app.Name,
 			"-cluster-subnets=" + clusterCIDR,
+			"--init-gateways",
+			"--nodeport",
+		})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+
+	ginkgo.It("reconciles node host subnets after single-stack to dual-stack upgrade", func() {
+		app.Action = func(ctx *cli.Context) error {
+			_, err := config.InitConfig(ctx, nil, nil)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			gomega.Expect(config.IPv4Mode).To(gomega.BeTrue())
+			gomega.Expect(config.IPv6Mode).To(gomega.BeTrue())
+
+			newNodeIpv4Subnet := "10.1.1.0/24"
+			newNode := &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "newNode",
+					Annotations: map[string]string{
+						"k8s.ovn.org/node-subnets":                   fmt.Sprintf("{\"default\":[\"%s\"]}", newNodeIpv4Subnet),
+						"k8s.ovn.org/node-chassis-id":                "2",
+						"k8s.ovn.org/node-gateway-router-lrp-ifaddr": "{\"ipv4\":\"100.64.0.2/16\"}",
+					},
+				},
+			}
+
+			_, err = kubeFakeClient.CoreV1().Nodes().Create(context.TODO(), newNode, metav1.CreateOptions{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			startFakeController(oc, wg)
+
+			// Simulate the ClusterManager reconciling the node annotations to dual-stack
+			newNode, err = kubeFakeClient.CoreV1().Nodes().Get(context.TODO(), newNode.Name, metav1.GetOptions{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			newNodeIpv6SubnetPrefix := "aef0:0:0:2::"
+			newNodeIpv6Subnet := newNodeIpv6SubnetPrefix + "2895/64"
+			newNode.Annotations["k8s.ovn.org/node-subnets"] = fmt.Sprintf("{\"default\":[\"%s\", \"%s\"]}", newNodeIpv4Subnet, newNodeIpv6Subnet)
+			_, err = kubeFakeClient.CoreV1().Nodes().Update(context.TODO(), newNode, metav1.UpdateOptions{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			// Ensure that the node's switch is eventually created once the annotations
+			// are reconciled by the network cluster controller
+			gomega.Eventually(func() bool {
+				newNodeLS, err := libovsdbops.GetLogicalSwitch(nbClient, &nbdb.LogicalSwitch{Name: newNode.Name})
+				if err != nil {
+					return false
+				}
+				if newNodeLS.OtherConfig["subnet"] != newNodeIpv4Subnet {
+					return false
+				}
+				if newNodeLS.OtherConfig["ipv6_prefix"] != newNodeIpv6SubnetPrefix {
+					return false
+				}
+				return true
+			}, 10).Should(gomega.BeTrue())
+
+			return nil
+		}
+
+		err := app.Run([]string{
+			app.Name,
+			"-cluster-subnets=" + clusterCIDR + "," + clusterv6CIDR,
+			"-k8s-service-cidr=10.96.0.0/16,fd00:10:96::/112",
 			"--init-gateways",
 			"--nodeport",
 		})
@@ -1587,22 +1746,129 @@ func newNodeSNAT(uuid, logicalIP, externalIP string) *nbdb.NAT {
 
 func TestController_syncNodes(t *testing.T) {
 	gomega.RegisterFailHandler(ginkgo.Fail)
+
+	node1Name := "node1"
+	nodeRmName := "deleteMeNode"
+
+	transitSwitch := nbdb.LogicalSwitch{
+		Name:        types.TransitSwitch,
+		UUID:        types.TransitSwitch + "-UUID",
+		OtherConfig: map[string]string{"subnet": "1.2.3.4/24"},
+	}
+
 	tests := []struct {
 		name         string
+		initialNBDB  []libovsdbtest.TestData
+		expectedNBDB []libovsdbtest.TestData
 		initialSBDB  []libovsdbtest.TestData
 		expectedSBDB []libovsdbtest.TestData
 	}{
 		{
+			name: "removes node 2, leaves node 1 alone",
+			initialNBDB: []libovsdbtest.TestData{
+				&nbdb.LogicalSwitch{
+					Name:        node1Name,
+					UUID:        node1Name + "-UUID",
+					OtherConfig: map[string]string{"subnet": "1.2.3.4/24"},
+				},
+				&nbdb.LogicalSwitch{
+					Name: types.ExternalSwitchPrefix + node1Name,
+					UUID: types.ExternalSwitchPrefix + node1Name + "-UUID",
+				},
+				&nbdb.LogicalSwitch{
+					Name: types.EgressGWSwitchPrefix + types.ExternalSwitchPrefix + node1Name,
+					UUID: types.EgressGWSwitchPrefix + types.ExternalSwitchPrefix + node1Name + "-UUID",
+				},
+				&nbdb.LogicalRouter{
+					Name: types.GWRouterPrefix + node1Name,
+					UUID: types.GWRouterPrefix + node1Name + "-UUID",
+				},
+				// these should be deleted
+				&nbdb.LogicalSwitch{
+					Name:        nodeRmName,
+					UUID:        nodeRmName + "-UUID",
+					OtherConfig: map[string]string{"subnet": "1.2.3.5/24"},
+				},
+				&nbdb.LogicalSwitch{
+					Name: types.ExternalSwitchPrefix + nodeRmName,
+					UUID: types.ExternalSwitchPrefix + nodeRmName + "-UUID",
+				},
+				&nbdb.LogicalSwitch{
+					Name: types.EgressGWSwitchPrefix + types.ExternalSwitchPrefix + nodeRmName,
+					UUID: types.EgressGWSwitchPrefix + types.ExternalSwitchPrefix + nodeRmName + "-UUID",
+				},
+				&nbdb.LogicalRouter{
+					Name: types.GWRouterPrefix + nodeRmName,
+					UUID: types.GWRouterPrefix + nodeRmName + "-UUID",
+				},
+			},
+			expectedNBDB: []libovsdbtest.TestData{
+				&nbdb.LogicalSwitch{
+					Name:        node1Name,
+					UUID:        node1Name + "-UUID",
+					OtherConfig: map[string]string{"subnet": "1.2.3.4/24"},
+				},
+				&nbdb.LogicalSwitch{
+					Name: types.ExternalSwitchPrefix + node1Name,
+					UUID: types.ExternalSwitchPrefix + node1Name + "-UUID",
+				},
+				&nbdb.LogicalSwitch{
+					Name: types.EgressGWSwitchPrefix + types.ExternalSwitchPrefix + node1Name,
+					UUID: types.EgressGWSwitchPrefix + types.ExternalSwitchPrefix + node1Name + "-UUID",
+				},
+				&nbdb.LogicalRouter{
+					Name: types.GWRouterPrefix + node1Name,
+					UUID: types.GWRouterPrefix + node1Name + "-UUID",
+				},
+			},
+		},
+		{
+			name: "removes node that only had external logical switch left behind",
+			initialNBDB: []libovsdbtest.TestData{
+				// left-over external logical switch
+				&nbdb.LogicalSwitch{
+					Name: types.ExternalSwitchPrefix + nodeRmName,
+					UUID: types.ExternalSwitchPrefix + nodeRmName + "-UUID",
+				},
+			},
+			expectedNBDB: []libovsdbtest.TestData{},
+		},
+		{
+			name: "removes node that only had external gw logical router left behind",
+			initialNBDB: []libovsdbtest.TestData{
+				// left-over gateway router
+				&nbdb.LogicalRouter{
+					Name: types.GWRouterPrefix + nodeRmName,
+					UUID: types.GWRouterPrefix + nodeRmName + "-UUID",
+				},
+			},
+			expectedNBDB: []libovsdbtest.TestData{},
+		},
+		{
+			name: "make sure transit switch is never removed",
+			initialNBDB: []libovsdbtest.TestData{
+				&transitSwitch,
+				// left-over external logical switch
+				&nbdb.LogicalSwitch{
+					Name: types.ExternalSwitchPrefix + nodeRmName,
+					UUID: types.ExternalSwitchPrefix + nodeRmName + "-UUID",
+				},
+			},
+			expectedNBDB: []libovsdbtest.TestData{
+				&transitSwitch,
+			},
+		},
+		{
 			name: "removes stale chassis and chassis private",
 			initialSBDB: []libovsdbtest.TestData{
-				&sbdb.Chassis{Name: "chassis-node1", Hostname: "node1"},
+				&sbdb.Chassis{Name: "chassis-node1", Hostname: node1Name},
 				&sbdb.ChassisPrivate{Name: "chassis-node1"},
-				&sbdb.Chassis{Name: "chassis-node2", Hostname: "node2"},
+				&sbdb.Chassis{Name: "chassis-node2", Hostname: nodeRmName},
 				&sbdb.ChassisPrivate{Name: "chassis-node2"},
 				&sbdb.ChassisPrivate{Name: "chassis-node3"},
 			},
 			expectedSBDB: []libovsdbtest.TestData{
-				&sbdb.Chassis{Name: "chassis-node1", Hostname: "node1"},
+				&sbdb.Chassis{Name: "chassis-node1", Hostname: node1Name},
 				&sbdb.ChassisPrivate{Name: "chassis-node1"},
 			},
 		},
@@ -1637,6 +1903,7 @@ func TestController_syncNodes(t *testing.T) {
 			defer f.Shutdown()
 
 			dbSetup := libovsdbtest.TestSetup{
+				NBData: tt.initialNBDB,
 				SBData: tt.initialSBDB,
 			}
 			nbClient, sbClient, libovsdbCleanup, err := libovsdbtest.NewNBSBTestHarness(dbSetup)
@@ -1660,13 +1927,26 @@ func TestController_syncNodes(t *testing.T) {
 				t.Fatalf("%s: Error on syncNodes: %v", tt.name, err)
 			}
 
-			matcher := libovsdbtest.HaveDataIgnoringUUIDs(tt.expectedSBDB)
-			match, err := matcher.Match(sbClient)
-			if err != nil {
-				t.Fatalf("%s: matcher error: %v", tt.name, err)
+			if tt.expectedNBDB != nil {
+				matcher := libovsdbtest.HaveDataIgnoringUUIDs(tt.expectedNBDB)
+				match, err := matcher.Match(nbClient)
+				if err != nil {
+					t.Fatalf("%s: NB matcher error: %v", tt.name, err)
+				}
+				if !match {
+					t.Fatalf("%s: NB DB state did not match: %s", tt.name, matcher.FailureMessage(sbClient))
+				}
 			}
-			if !match {
-				t.Fatalf("%s: DB state did not match: %s", tt.name, matcher.FailureMessage(sbClient))
+
+			if tt.expectedSBDB != nil {
+				matcher := libovsdbtest.HaveDataIgnoringUUIDs(tt.expectedSBDB)
+				match, err := matcher.Match(sbClient)
+				if err != nil {
+					t.Fatalf("%s: SB matcher error: %v", tt.name, err)
+				}
+				if !match {
+					t.Fatalf("%s: SB DB state did not match: %s", tt.name, matcher.FailureMessage(sbClient))
+				}
 			}
 		})
 	}

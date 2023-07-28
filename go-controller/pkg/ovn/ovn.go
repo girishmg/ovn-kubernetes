@@ -12,38 +12,22 @@ import (
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
-	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egress_services"
-	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
+	egresssvc_zone "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egressservice"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 
 	kapi "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/client-go/informers"
-	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/tools/record"
 	ref "k8s.io/client-go/tools/reference"
 	"k8s.io/klog/v2"
 )
 
-const (
-	egressFirewallDNSDefaultDuration  = 30 * time.Minute
-	egressIPReachabilityCheckInterval = 5 * time.Second
-)
-
-// ACL logging severity levels
-type ACLLoggingLevels struct {
-	Allow string `json:"allow,omitempty"`
-	Deny  string `json:"deny,omitempty"`
-}
+const egressFirewallDNSDefaultDuration = 30 * time.Minute
 
 const (
 	// TCP is the constant string for the string "TCP"
@@ -139,9 +123,11 @@ func (oc *DefaultNetworkController) ensurePod(oldPod, pod *kapi.Pod, addPort boo
 	}
 
 	if oc.isPodScheduledinLocalZone(pod) {
+		klog.V(5).Infof("Ensuring zone local for Pod %s/%s in node %s", pod.Namespace, pod.Name, pod.Spec.NodeName)
 		return oc.ensureLocalZonePod(oldPod, pod, addPort)
 	}
 
+	klog.V(5).Infof("Ensuring zone remote for Pod %s/%s in node %s", pod.Namespace, pod.Name, pod.Spec.NodeName)
 	return oc.ensureRemoteZonePod(oldPod, pod, addPort)
 }
 
@@ -182,20 +168,23 @@ func (oc *DefaultNetworkController) ensureLocalZonePod(oldPod, pod *kapi.Pod, ad
 		}
 	}
 
+	if kubevirt.IsPodLiveMigratable(pod) {
+		return kubevirt.EnsureLocalZonePodAddressesToNodeRoute(oc.watchFactory, oc.nbClient, oc.lsManager, pod, ovntypes.DefaultNetworkName)
+	}
+
 	return nil
 }
 
 // ensureRemoteZonePod tries to set up remote zone pod bits required to interconnect it.
 //   - Adds the remote pod ips to the pod namespace address set for network policy and egress gw
 //
-// It returns nil on success and error on failure; failur indicates the pod set up should be retried later.
+// It returns nil on success and error on failure; failure indicates the pod set up should be retried later.
 func (oc *DefaultNetworkController) ensureRemoteZonePod(oldPod, pod *kapi.Pod, addPort bool) error {
-	if len(pod.Status.PodIPs) < 1 {
-		return nil
-	}
 	podIfAddrs, err := util.GetPodCIDRsWithFullMask(pod, oc.NetInfo)
 	if err != nil {
-		return fmt.Errorf("failed to get pod ips for the pod  %s/%s : %w", pod.Namespace, pod.Name, err)
+		// not finding pod IPs on a remote pod is common until the other node wires the pod, suppress it
+		return fmt.Errorf("failed to obtain IPs to add remote pod %s/%s: %w",
+			pod.Namespace, pod.Name, ovntypes.NewSuppressedError(err))
 	}
 
 	if (addPort || (oldPod != nil && len(pod.Status.PodIPs) != len(oldPod.Status.PodIPs))) && !util.PodWantsHostNetwork(pod) {
@@ -221,6 +210,9 @@ func (oc *DefaultNetworkController) ensureRemoteZonePod(oldPod, pod *kapi.Pod, a
 			return fmt.Errorf("addPodExternalGW failed for remote pod %s/%s: %v", pod.Namespace, pod.Name, err)
 		}
 	}
+	if kubevirt.IsPodLiveMigratable(pod) {
+		return kubevirt.EnsureRemoteZonePodAddressesToNodeRoute(oc.controllerName, oc.watchFactory, oc.nbClient, oc.lsManager, pod, ovntypes.DefaultNetworkName)
+	}
 	return nil
 }
 
@@ -228,10 +220,16 @@ func (oc *DefaultNetworkController) ensureRemoteZonePod(oldPod, pod *kapi.Pod, a
 // failure indicates the pod tear down should be retried later.
 func (oc *DefaultNetworkController) removePod(pod *kapi.Pod, portInfo *lpInfo) error {
 	if oc.isPodScheduledinLocalZone(pod) {
-		return oc.removeLocalZonePod(pod, portInfo)
+		if err := oc.removeLocalZonePod(pod, portInfo); err != nil {
+			return err
+		}
+	} else {
+		if err := oc.removeRemoteZonePod(pod); err != nil {
+			return err
+		}
 	}
 
-	return oc.removeRemoteZonePod(pod)
+	return kubevirt.CleanUpLiveMigratablePod(oc.nbClient, oc.watchFactory, pod)
 }
 
 // removeLocalZonePod tries to tear down a local zone pod. It returns nil on success and error on failure;
@@ -257,6 +255,7 @@ func (oc *DefaultNetworkController) removeLocalZonePod(pod *kapi.Pod, portInfo *
 		return fmt.Errorf("deleteLogicalPort failed for pod %s: %w",
 			getPodNamespacedName(pod), err)
 	}
+
 	return nil
 }
 
@@ -274,6 +273,21 @@ func (oc *DefaultNetworkController) removeRemoteZonePod(pod *kapi.Pod) error {
 		if err := oc.deletePodExternalGW(pod); err != nil {
 			return fmt.Errorf("unable to delete external gateway routes for remote pod %s: %w",
 				getPodNamespacedName(pod), err)
+		}
+	}
+
+	if kubevirt.IsPodLiveMigratable(pod) {
+		// After live migration to a different zone ip should be deallocated
+		// from remote zone if VM is gone.
+		podAnnotation, err := util.UnmarshalPodAnnotation(pod.Annotations, ovntypes.DefaultNetworkName)
+		if err != nil {
+			return fmt.Errorf("unable to unmarshal pod annotation to release IPs at removeRemoteZonePod: %v", err)
+		}
+		switchName, zoneContainsPodSubnet := kubevirt.ZoneContainsPodSubnet(oc.lsManager, podAnnotation)
+		if zoneContainsPodSubnet {
+			if err := oc.lsManager.ReleaseIPs(switchName, podAnnotation.IPs); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -298,13 +312,6 @@ func (oc *DefaultNetworkController) WatchEgressNodes() error {
 // firewall rules may match nodes using a node selector
 func (oc *DefaultNetworkController) WatchEgressFwNodes() error {
 	_, err := oc.retryEgressFwNodes.WatchResource()
-	return err
-}
-
-// WatchCloudPrivateIPConfig starts the watching of cloudprivateipconfigs
-// resource and calls back the appropriate handler logic.
-func (oc *DefaultNetworkController) WatchCloudPrivateIPConfig() error {
-	_, err := oc.retryCloudPrivateIPConfig.WatchResource()
 	return err
 }
 
@@ -415,41 +422,6 @@ func shouldUpdateNode(node, oldNode *kapi.Node) (bool, error) {
 	return true, nil
 }
 
-func newServiceController(client clientset.Interface, nbClient libovsdbclient.Client, recorder record.EventRecorder) (*svccontroller.Controller, informers.SharedInformerFactory, error) {
-	// Create our own informers to start compartmentalizing the code
-	// filter server side the things we don't care about
-	noProxyName, err := labels.NewRequirement("service.kubernetes.io/service-proxy-name", selection.DoesNotExist, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	noHeadlessEndpoints, err := labels.NewRequirement(kapi.IsHeadlessService, selection.DoesNotExist, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	labelSelector := labels.NewSelector()
-	labelSelector = labelSelector.Add(*noProxyName, *noHeadlessEndpoints)
-
-	svcFactory := informers.NewSharedInformerFactoryWithOptions(client, 0,
-		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
-			options.LabelSelector = labelSelector.String()
-		}))
-
-	controller, err := svccontroller.NewController(
-		client,
-		nbClient,
-		svcFactory.Core().V1().Services(),
-		svcFactory.Discovery().V1().EndpointSlices(),
-		svcFactory.Core().V1().Nodes(),
-		recorder,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	return controller, svcFactory, nil
-}
-
 func (oc *DefaultNetworkController) StartServiceController(wg *sync.WaitGroup, runRepair bool) error {
 	klog.Infof("Starting OVN Service Controller: Using Endpoint Slices")
 	wg.Add(1)
@@ -466,7 +438,7 @@ func (oc *DefaultNetworkController) StartServiceController(wg *sync.WaitGroup, r
 	return nil
 }
 
-func (oc *DefaultNetworkController) InitEgressServiceController() (*egresssvc.Controller, error) {
+func (oc *DefaultNetworkController) InitEgressServiceZoneController() (*egresssvc_zone.Controller, error) {
 	// If the EgressIP controller is enabled it will take care of creating the
 	// "no reroute" policies - we can pass "noop" functions to the egress service controller.
 	initClusterEgressPolicies := func(libovsdbclient.Client, addressset.AddressSetFactory, string) error { return nil }
@@ -481,29 +453,9 @@ func (oc *DefaultNetworkController) InitEgressServiceController() (*egresssvc.Co
 		deleteLegacyDefaultNoRerouteNodePolicies = DeleteLegacyDefaultNoRerouteNodePolicies
 	}
 
-	// TODO: currently an ugly hack to pass the (copied) isReachable func to the egress service controller
-	// without touching the egressIP controller code too much before the Controller object is created.
-	// This will be removed once we consolidate all of the healthchecks to a different place and have
-	// the controllers query a universal cache instead of creating multiple goroutines that do the same thing.
-	timeout := config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout
-	hcPort := config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort
-	isReachable := func(nodeName string, mgmtIPs []net.IP, healthClient healthcheck.EgressIPHealthClient) bool {
-		// Check if we need to do node reachability check
-		if timeout == 0 {
-			return true
-		}
-
-		if hcPort == 0 {
-			return isReachableLegacy(nodeName, mgmtIPs, timeout)
-		}
-
-		return isReachableViaGRPC(mgmtIPs, healthClient, hcPort, timeout)
-	}
-
-	return egresssvc.NewController(DefaultNetworkControllerName, oc.client, oc.nbClient, oc.addressSetFactory,
-		initClusterEgressPolicies, ensureNodeNoReroutePolicies, deleteLegacyDefaultNoRerouteNodePolicies, oc.kube.UpdateEgressServiceStatus,
-		isReachable,
-		oc.stopChan, oc.watchFactory.EgressServiceInformer(), oc.svcFactory.Core().V1().Services(),
-		oc.svcFactory.Discovery().V1().EndpointSlices(),
-		oc.svcFactory.Core().V1().Nodes())
+	return egresssvc_zone.NewController(DefaultNetworkControllerName, oc.client, oc.nbClient, oc.addressSetFactory,
+		initClusterEgressPolicies, ensureNodeNoReroutePolicies, deleteLegacyDefaultNoRerouteNodePolicies,
+		oc.stopChan, oc.watchFactory.EgressServiceInformer(), oc.watchFactory.ServiceCoreInformer(),
+		oc.watchFactory.EndpointSliceCoreInformer(),
+		oc.watchFactory.NodeCoreInformer(), oc.zone)
 }

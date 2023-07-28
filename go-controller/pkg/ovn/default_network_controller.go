@@ -8,17 +8,17 @@ import (
 	"sync"
 	"time"
 
-	ocpcloudnetworkapi "github.com/openshift/api/cloudnetwork/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	egressfirewall "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1"
 	egressipv1 "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1"
 	egressqoslisters "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1/apis/listers/egressqos/v1"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
+	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
-	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egress_services"
+	apbroutecontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/apbroute"
+	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egressservice"
 	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/unidling"
 	aclsyncer "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/external_ids_syncer/acl"
@@ -34,7 +34,6 @@ import (
 	kapi "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/informers"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
@@ -52,8 +51,8 @@ type DefaultNetworkController struct {
 	// cluster's east-west traffic.
 	loadbalancerClusterCache map[kapi.Protocol]string
 
-	externalGWCache map[ktypes.NamespacedName]*externalRouteInfo
-	exGWCacheMutex  sync.RWMutex
+	externalGWCache map[ktypes.NamespacedName]*apbroutecontroller.ExternalRouteInfo
+	exGWCacheMutex  *sync.RWMutex
 
 	// egressFirewalls is a map of namespaces and the egressFirewall attached to it
 	egressFirewalls sync.Map
@@ -88,14 +87,15 @@ type DefaultNetworkController struct {
 	defaultCOPPUUID string
 
 	// Controller used for programming OVN for egress IP
-	eIPC egressIPController
+	eIPC egressIPZoneController
 
 	// Controller used to handle services
 	svcController *svccontroller.Controller
 	// Controller used to handle egress services
 	egressSvcController *egresssvc.Controller
-	// svcFactory used to handle service related events
-	svcFactory informers.SharedInformerFactory
+
+	// Controller used to handle the admin policy based external route resources
+	apbExternalRouteController *apbroutecontroller.ExternalGatewayMasterController
 
 	egressFirewallDNS *EgressDNS
 
@@ -120,9 +120,7 @@ type DefaultNetworkController struct {
 	nodeClusterRouterPortFailed sync.Map
 	hybridOverlayFailed         sync.Map
 	syncZoneICFailed            sync.Map
-
-	// retry framework for Cloud private IP config
-	retryCloudPrivateIPConfig *retry.RetryFramework
+	syncMigratablePodsFailed    sync.Map
 
 	// variable to determine if all pods present on the node during startup have been processed
 	// updated atomically
@@ -132,10 +130,6 @@ type DefaultNetworkController struct {
 	// connecting to the join switch
 	ovnClusterLRPToJoinIfAddrs []*net.IPNet
 
-	// zoneICHandler creates the interconnect resources for local nodes and remote nodes.
-	// Interconnect resources are Transit switch and logical ports connecting this transit switch
-	// to the cluster router. Please see zone_interconnect/interconnect_handler.go for more details.
-	zoneICHandler *zoneic.ZoneInterconnectHandler
 	// zoneChassisHandler handles the local node and remote nodes in creating or updating the chassis entries in the OVN Southbound DB.
 	// Please see zone_interconnect/chassis_handler.go for more details.
 	zoneChassisHandler *zoneic.ZoneChassisHandler
@@ -143,7 +137,7 @@ type DefaultNetworkController struct {
 
 // NewDefaultNetworkController creates a new OVN controller for creating logical network
 // infrastructure and policy for default l3 network
-func NewDefaultNetworkController(cnci *CommonNetworkControllerInfo, err error) (*DefaultNetworkController, error) {
+func NewDefaultNetworkController(cnci *CommonNetworkControllerInfo) (*DefaultNetworkController, error) {
 	stopChan := make(chan struct{})
 	wg := &sync.WaitGroup{}
 	return newDefaultNetworkControllerCommon(cnci, stopChan, wg, nil)
@@ -156,7 +150,14 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 	if addressSetFactory == nil {
 		addressSetFactory = addressset.NewOvnAddressSetFactory(cnci.nbClient, config.IPv4Mode, config.IPv6Mode)
 	}
-	svcController, svcFactory, err := newServiceController(cnci.client, cnci.nbClient, cnci.recorder)
+
+	svcController, err := svccontroller.NewController(
+		cnci.client, cnci.nbClient,
+		cnci.watchFactory.ServiceCoreInformer(),
+		cnci.watchFactory.EndpointSliceCoreInformer(),
+		cnci.watchFactory.NodeCoreInformer(),
+		cnci.recorder,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create new service controller while creating new default network controller: %w", err)
 	}
@@ -164,8 +165,21 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 	var zoneICHandler *zoneic.ZoneInterconnectHandler
 	var zoneChassisHandler *zoneic.ZoneChassisHandler
 	if config.OVNKubernetesFeature.EnableInterconnect {
-		zoneICHandler = zoneic.NewZoneInterconnectHandler(&util.DefaultNetInfo{}, cnci.nbClient, cnci.sbClient)
+		zoneICHandler = zoneic.NewZoneInterconnectHandler(&util.DefaultNetInfo{}, cnci.nbClient, cnci.sbClient, cnci.watchFactory)
 		zoneChassisHandler = zoneic.NewZoneChassisHandler(cnci.sbClient)
+	}
+	apbExternalRouteController, err := apbroutecontroller.NewExternalMasterController(
+		cnci.client,
+		cnci.kube.APBRouteClient,
+		defaultStopChan,
+		cnci.watchFactory.PodCoreInformer(),
+		cnci.watchFactory.NamespaceInformer(),
+		cnci.watchFactory.NodeCoreInformer().Lister(),
+		cnci.nbClient,
+		addressSetFactory,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create new admin policy based external route controller while creating new default network controller :%w", err)
 	}
 
 	oc := &DefaultNetworkController{
@@ -184,31 +198,26 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 			stopChan:                    defaultStopChan,
 			wg:                          defaultWg,
 			localZoneNodes:              &sync.Map{},
+			zoneICHandler:               zoneICHandler,
+			cancelableCtx:               util.NewCancelableContext(),
 		},
-		externalGWCache: make(map[ktypes.NamespacedName]*externalRouteInfo),
-		exGWCacheMutex:  sync.RWMutex{},
-		eIPC: egressIPController{
-			egressIPAssignmentMutex:           &sync.Mutex{},
-			podAssignmentMutex:                &sync.Mutex{},
-			nodeIPUpdateMutex:                 &sync.Mutex{},
-			podAssignment:                     make(map[string]*podAssignmentState),
-			pendingCloudPrivateIPConfigsMutex: &sync.Mutex{},
-			pendingCloudPrivateIPConfigsOps:   make(map[string]map[string]*cloudPrivateIPConfigOp),
-			allocator:                         allocator{&sync.Mutex{}, make(map[string]*egressNode)},
-			nbClient:                          cnci.nbClient,
-			watchFactory:                      cnci.watchFactory,
-			egressIPTotalTimeout:              config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout,
-			reachabilityCheckInterval:         egressIPReachabilityCheckInterval,
-			egressIPNodeHealthCheckPort:       config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort,
+		externalGWCache: apbExternalRouteController.ExternalGWCache,
+		exGWCacheMutex:  apbExternalRouteController.ExGWCacheMutex,
+		eIPC: egressIPZoneController{
+			nodeIPUpdateMutex:  &sync.Mutex{},
+			podAssignmentMutex: &sync.Mutex{},
+			podAssignment:      make(map[string]*podAssignmentState),
+			nbClient:           cnci.nbClient,
+			watchFactory:       cnci.watchFactory,
+			nodeZoneState:      syncmap.NewSyncMap[bool](),
 		},
 		loadbalancerClusterCache:     make(map[kapi.Protocol]string),
 		clusterLoadBalancerGroupUUID: "",
 		switchLoadBalancerGroupUUID:  "",
 		routerLoadBalancerGroupUUID:  "",
 		svcController:                svcController,
-		svcFactory:                   svcFactory,
-		zoneICHandler:                zoneICHandler,
 		zoneChassisHandler:           zoneChassisHandler,
+		apbExternalRouteController:   apbExternalRouteController,
 	}
 
 	// Allocate IPs for logical router port "GwRouterToJoinSwitchPrefix + OVNClusterRouter". This should always
@@ -235,7 +244,6 @@ func (oc *DefaultNetworkController) initRetryFramework() {
 	oc.retryEgressIPPods = oc.newRetryFramework(factory.EgressIPPodType)
 	oc.retryEgressNodes = oc.newRetryFramework(factory.EgressNodeType)
 	oc.retryEgressFwNodes = oc.newRetryFramework(factory.EgressFwNodeType)
-	oc.retryCloudPrivateIPConfig = oc.newRetryFramework(factory.CloudPrivateIPConfigType)
 	oc.retryNamespaces = oc.newRetryFramework(factory.NamespaceType)
 	oc.retryNetworkPolicies = oc.newRetryFramework(factory.PolicyType)
 }
@@ -305,7 +313,7 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err = oc.Init(); err != nil {
+	if err = oc.Init(ctx); err != nil {
 		return err
 	}
 
@@ -315,6 +323,7 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 // Stop gracefully stops the controller
 func (oc *DefaultNetworkController) Stop() {
 	close(oc.stopChan)
+	oc.cancelableCtx.Cancel()
 	oc.wg.Wait()
 }
 
@@ -327,7 +336,7 @@ func (oc *DefaultNetworkController) Stop() {
 // TODO: Verify that the cluster was not already called with a different global subnet
 //
 //	If true, then either quit or perform a complete reconfiguration of the cluster (recreate switches/routers with new subnet values)
-func (oc *DefaultNetworkController) Init() error {
+func (oc *DefaultNetworkController) Init(ctx context.Context) error {
 	existingNodes, err := oc.kube.GetNodes()
 	if err != nil {
 		klog.Errorf("Error in fetching nodes: %v", err)
@@ -376,12 +385,24 @@ func (oc *DefaultNetworkController) Init() error {
 		oc.routerLoadBalancerGroupUUID = loadBalancerGroup.UUID
 	}
 
+	networkID := util.InvalidNetworkID
 	nodeNames := []string{}
 	for _, node := range existingNodes.Items {
 		nodeNames = append(nodeNames, node.Name)
+
+		if config.OVNKubernetesFeature.EnableInterconnect && networkID == util.InvalidNetworkID {
+			// get networkID from any node in the cluster
+			networkID, _ = util.ParseNetworkIDAnnotation(&node, oc.zoneICHandler.GetNetworkName())
+		}
 	}
 	if err := oc.SetupMaster(nodeNames); err != nil {
 		klog.Errorf("Failed to setup master (%v)", err)
+		return err
+	}
+	// Sync external gateway routes. External gateway are set via Admin Policy Based External Route CRs.
+	// So execute an individual sync method at startup to cleanup any difference
+	klog.V(4).Info("Cleaning External Gateway ECMP routes")
+	if err := WithSyncDurationMetric("external gateway routes", oc.apbExternalRouteController.Repair); err != nil {
 		return err
 	}
 
@@ -391,12 +412,8 @@ func (oc *DefaultNetworkController) Init() error {
 // Run starts the actual watching.
 func (oc *DefaultNetworkController) Run(ctx context.Context) error {
 	oc.syncPeriodic()
-	klog.Infof("Starting all the Watchers...")
+	klog.Info("Starting all the Watchers...")
 	start := time.Now()
-
-	// Sync external gateway routes. External gateway may be set in namespaces
-	// or via pods. So execute an individual sync method at startup
-	WithSyncDurationMetricNoError("external gateway routes", oc.cleanExGwECMPRoutes)
 
 	// WatchNamespaces() should be started first because it has no other
 	// dependencies, and WatchNodes() depends on it
@@ -412,13 +429,10 @@ func (oc *DefaultNetworkController) Run(ctx context.Context) error {
 	}
 
 	startSvc := time.Now()
-	// Start service watch factory and sync services
-	oc.svcFactory.Start(oc.stopChan)
-
 	// Services should be started after nodes to prevent LB churn
 	err := oc.StartServiceController(oc.wg, true)
 	endSvc := time.Since(startSvc)
-	metrics.MetricMasterSyncDuration.WithLabelValues("service").Set(endSvc.Seconds())
+	metrics.MetricOVNKubeControllerSyncDuration.WithLabelValues("service").Set(endSvc.Seconds())
 	if err != nil {
 		return err
 	}
@@ -455,17 +469,6 @@ func (oc *DefaultNetworkController) Run(ctx context.Context) error {
 		if err := WithSyncDurationMetric("egress ip", oc.WatchEgressIP); err != nil {
 			return err
 		}
-		if util.PlatformTypeIsEgressIPCloudProvider() {
-			if err := WithSyncDurationMetric("could private ip config", oc.WatchCloudPrivateIPConfig); err != nil {
-				return err
-			}
-		}
-		if config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout == 0 {
-			klog.V(2).Infof("EgressIP node reachability check disabled")
-		} else if config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort != 0 {
-			klog.Infof("EgressIP node reachability enabled and using gRPC port %d",
-				config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort)
-		}
 	}
 
 	if config.OVNKubernetesFeature.EnableEgressFirewall {
@@ -493,29 +496,31 @@ func (oc *DefaultNetworkController) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		oc.wg.Add(1)
-		go func() {
-			defer oc.wg.Done()
-			oc.runEgressQoSController(1, oc.stopChan)
-		}()
+		if err = oc.runEgressQoSController(oc.wg, 1, oc.stopChan); err != nil {
+			return err
+		}
 	}
 
 	if config.OVNKubernetesFeature.EnableEgressService {
-		c, err := oc.InitEgressServiceController()
+		c, err := oc.InitEgressServiceZoneController()
 		if err != nil {
 			return fmt.Errorf("unable to create new egress service controller while creating new default network controller: %w", err)
 		}
 		oc.egressSvcController = c
-		oc.wg.Add(1)
-		go func() {
-			defer oc.wg.Done()
-			oc.egressSvcController.Run(1)
-		}()
+		if err = oc.egressSvcController.Run(oc.wg, 1); err != nil {
+			return err
+		}
+	}
+
+	if config.OVNKubernetesFeature.EnableMultiExternalGateway {
+		if err = oc.apbExternalRouteController.Run(oc.wg, 1); err != nil {
+			return err
+		}
 	}
 
 	end := time.Since(start)
 	klog.Infof("Completing all the Watchers took %v", end)
-	metrics.MetricMasterSyncDuration.WithLabelValues("all watchers").Set(end.Seconds())
+	metrics.MetricOVNKubeControllerSyncDuration.WithLabelValues("all watchers").Set(end.Seconds())
 
 	if config.Kubernetes.OVNEmptyLbEvents {
 		klog.Infof("Starting unidling controllers")
@@ -552,7 +557,7 @@ func WithSyncDurationMetric(resourceName string, f func() error) error {
 	start := time.Now()
 	defer func() {
 		end := time.Since(start)
-		metrics.MetricMasterSyncDuration.WithLabelValues(resourceName).Set(end.Seconds())
+		metrics.MetricOVNKubeControllerSyncDuration.WithLabelValues(resourceName).Set(end.Seconds())
 	}()
 	return f()
 }
@@ -561,7 +566,7 @@ func WithSyncDurationMetricNoError(resourceName string, f func()) {
 	start := time.Now()
 	defer func() {
 		end := time.Since(start)
-		metrics.MetricMasterSyncDuration.WithLabelValues(resourceName).Set(end.Seconds())
+		metrics.MetricOVNKubeControllerSyncDuration.WithLabelValues(resourceName).Set(end.Seconds())
 	}()
 	f()
 }
@@ -720,15 +725,19 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 				_, gwSync := h.oc.gatewaysFailed.Load(node.Name)
 				_, hoSync := h.oc.hybridOverlayFailed.Load(node.Name)
 				_, zoneICSync := h.oc.syncZoneICFailed.Load(node.Name)
+				_, syncMigratablePods := h.oc.syncMigratablePodsFailed.Load(node.Name)
 				nodeParams = &nodeSyncs{
 					nodeSync,
 					clusterRtrSync,
 					mgmtSync,
 					gwSync,
 					hoSync,
-					zoneICSync}
+					zoneICSync,
+					syncMigratablePods}
 			} else {
-				nodeParams = &nodeSyncs{true, true, true, true, config.HybridOverlay.Enabled, config.OVNKubernetesFeature.EnableInterconnect}
+				nodeHostSubnets, _ := util.ParseNodeHostSubnetAnnotation(node, ovntypes.DefaultNetworkName)
+				syncMigratablePods := nodeHostSubnets != nil
+				nodeParams = &nodeSyncs{true, true, true, true, config.HybridOverlay.Enabled, config.OVNKubernetesFeature.EnableInterconnect, syncMigratablePods}
 			}
 
 			if err = h.oc.addUpdateLocalNodeEvent(node, nodeParams); err != nil {
@@ -772,7 +781,23 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 
 	case factory.EgressNodeType:
 		node := obj.(*kapi.Node)
-		return h.oc.reconcileNodeForEgressIP(nil, node)
+		// Update node in zone cache; value will be true if node is local
+		// to this zone and false if its not
+		h.oc.eIPC.nodeZoneState.LockKey(node.Name)
+		h.oc.eIPC.nodeZoneState.Store(node.Name, h.oc.isLocalZoneNode(node))
+		h.oc.eIPC.nodeZoneState.UnlockKey(node.Name)
+		// add the nodeIP to the default LRP (102 priority) destination address-set
+		err := h.oc.ensureDefaultNoRerouteNodePolicies()
+		if err != nil {
+			return err
+		}
+		// add the GARP configuration for all the new nodes we get
+		// since we use the "exclude-lb-vips-from-garp": "true"
+		// we shouldn't have scale issues
+		// NOTE: Adding GARP needs to be done only during node add
+		// It is a one time operation and doesn't need to be done during
+		// node updates. It needs to be done only for nodes local to this zone
+		return h.oc.addEgressNode(node)
 
 	case factory.EgressFwNodeType:
 		node := obj.(*kapi.Node)
@@ -781,10 +806,6 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 				node.Name, err)
 			return err
 		}
-
-	case factory.CloudPrivateIPConfigType:
-		cloudPrivateIPConfig := obj.(*ocpcloudnetworkapi.CloudPrivateIPConfig)
-		return h.oc.reconcileCloudPrivateIPConfig(nil, cloudPrivateIPConfig)
 
 	case factory.NamespaceType:
 		ns, ok := obj.(*kapi.Namespace)
@@ -841,40 +862,53 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 		// |    remote          |      remote       |     Call addUpdateRemoteNodeEvent()             |
 		// |                    |                   |                                                 |
 		// |--------------------+-------------------+-------------------------------------------------+
-		if h.oc.isLocalZoneNode(newNode) {
+		newNodeIsLocalZoneNode := h.oc.isLocalZoneNode(newNode)
+		zoneClusterChanged := h.oc.nodeZoneClusterChanged(oldNode, newNode, newNodeIsLocalZoneNode)
+		nodeSubnetChanged := nodeSubnetChanged(oldNode, newNode)
+		if newNodeIsLocalZoneNode {
 			var nodeSyncsParam *nodeSyncs
 			if h.oc.isLocalZoneNode(oldNode) {
 				// determine what actually changed in this update
 				_, nodeSync := h.oc.addNodeFailed.Load(newNode.Name)
 				_, failed := h.oc.nodeClusterRouterPortFailed.Load(newNode.Name)
-				clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
+				clusterRtrSync := failed || nodeChassisChanged(oldNode, newNode) || nodeSubnetChanged
 				_, failed = h.oc.mgmtPortFailed.Load(newNode.Name)
-				mgmtSync := failed || macAddressChanged(oldNode, newNode) || nodeSubnetChanged(oldNode, newNode)
+				mgmtSync := failed || macAddressChanged(oldNode, newNode) || nodeSubnetChanged
 				_, failed = h.oc.gatewaysFailed.Load(newNode.Name)
 				gwSync := (failed || gatewayChanged(oldNode, newNode) ||
-					nodeSubnetChanged(oldNode, newNode) || hostAddressesChanged(oldNode, newNode) ||
+					nodeSubnetChanged || hostAddressesChanged(oldNode, newNode) ||
 					nodeGatewayMTUSupportChanged(oldNode, newNode))
 				_, hoSync := h.oc.hybridOverlayFailed.Load(newNode.Name)
 				_, syncZoneIC := h.oc.syncZoneICFailed.Load(newNode.Name)
+				syncZoneIC = syncZoneIC || zoneClusterChanged
+				_, failed = h.oc.syncMigratablePodsFailed.Load(newNode.Name)
+				syncMigratablePods := failed || nodeSubnetChanged
 				nodeSyncsParam = &nodeSyncs{
 					nodeSync,
 					clusterRtrSync,
 					mgmtSync,
 					gwSync,
 					hoSync,
-					syncZoneIC}
+					syncZoneIC,
+					syncMigratablePods}
 			} else {
 				klog.Infof("Node %s moved from the remote zone %s to local zone.",
 					newNode.Name, util.GetNodeZone(oldNode), util.GetNodeZone(newNode))
 				// The node is now a local zone node.  Trigger a full node sync.
-				nodeSyncsParam = &nodeSyncs{true, true, true, true, true, config.OVNKubernetesFeature.EnableInterconnect}
+				nodeSyncsParam = &nodeSyncs{true, true, true, true, true, config.OVNKubernetesFeature.EnableInterconnect, true}
 			}
 
 			return h.oc.addUpdateLocalNodeEvent(newNode, nodeSyncsParam)
 		} else {
 			_, syncZoneIC := h.oc.syncZoneICFailed.Load(newNode.Name)
-			// Check if the node moved from local zone to remote zone and if so syncZoneIC should be set to true
-			syncZoneIC = syncZoneIC || h.oc.isLocalZoneNode(oldNode)
+
+			// Check if the node moved from local zone to remote zone and if so syncZoneIC should be set to true.
+			// Also check if node subnet changed, so static routes are properly set
+			syncZoneIC = syncZoneIC || h.oc.isLocalZoneNode(oldNode) || nodeSubnetChanged || zoneClusterChanged
+			if syncZoneIC {
+				klog.Infof("Node %s in remote zone %s needs interconnect zone sync up. Zone cluster changed: %v",
+					newNode.Name, util.GetNodeZone(newNode), zoneClusterChanged)
+			}
 			return h.oc.addUpdateRemoteNodeEvent(newNode, syncZoneIC)
 		}
 
@@ -896,17 +930,25 @@ func (h *defaultNetworkControllerEventHandler) UpdateResource(oldObj, newObj int
 	case factory.EgressNodeType:
 		oldNode := oldObj.(*kapi.Node)
 		newNode := newObj.(*kapi.Node)
-		return h.oc.reconcileNodeForEgressIP(oldNode, newNode)
+		// Update node in zone cache; value will be true if node is local
+		// to this zone and false if its not
+		h.oc.eIPC.nodeZoneState.LockKey(newNode.Name)
+		h.oc.eIPC.nodeZoneState.Store(newNode.Name, h.oc.isLocalZoneNode(newNode))
+		h.oc.eIPC.nodeZoneState.UnlockKey(newNode.Name)
+		// update the nodeIP in the defalt-reRoute (102 priority) destination address-set
+		if util.NodeHostAddressesAnnotationChanged(oldNode, newNode) {
+			klog.Infof("Egress IP detected IP address change for node %s. Updating no re-route policies", newNode.Name)
+			err := h.oc.ensureDefaultNoRerouteNodePolicies()
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 
 	case factory.EgressFwNodeType:
 		oldNode := oldObj.(*kapi.Node)
 		newNode := newObj.(*kapi.Node)
 		return h.oc.updateEgressFirewallForNode(oldNode, newNode)
-
-	case factory.CloudPrivateIPConfigType:
-		oldCloudPrivateIPConfig := oldObj.(*ocpcloudnetworkapi.CloudPrivateIPConfig)
-		newCloudPrivateIPConfig := newObj.(*ocpcloudnetworkapi.CloudPrivateIPConfig)
-		return h.oc.reconcileCloudPrivateIPConfig(oldCloudPrivateIPConfig, newCloudPrivateIPConfig)
 
 	case factory.NamespaceType:
 		oldNs, newNs := oldObj.(*kapi.Namespace), newObj.(*kapi.Namespace)
@@ -966,7 +1008,20 @@ func (h *defaultNetworkControllerEventHandler) DeleteResource(obj, cachedObj int
 
 	case factory.EgressNodeType:
 		node := obj.(*kapi.Node)
-		return h.oc.reconcileNodeForEgressIP(node, nil)
+		// remove the GARP setup for the node
+		if err := h.oc.deleteEgressNode(node); err != nil {
+			return err
+		}
+		// remove the IPs from the destination address-set of the default LRP (102)
+		err := h.oc.ensureDefaultNoRerouteNodePolicies()
+		if err != nil {
+			return err
+		}
+		// Update node in zone cache; remove the node key since node has been deleted.
+		h.oc.eIPC.nodeZoneState.LockKey(node.Name)
+		h.oc.eIPC.nodeZoneState.Delete(node.Name)
+		h.oc.eIPC.nodeZoneState.UnlockKey(node.Name)
+		return nil
 
 	case factory.EgressFwNodeType:
 		node, ok := obj.(*kapi.Node)
@@ -974,10 +1029,6 @@ func (h *defaultNetworkControllerEventHandler) DeleteResource(obj, cachedObj int
 			return fmt.Errorf("could not cast obj of type %T to *knet.Node", obj)
 		}
 		return h.oc.updateEgressFirewallForNode(node, nil)
-
-	case factory.CloudPrivateIPConfigType:
-		cloudPrivateIPConfig := obj.(*ocpcloudnetworkapi.CloudPrivateIPConfig)
-		return h.oc.reconcileCloudPrivateIPConfig(cloudPrivateIPConfig, nil)
 
 	case factory.NamespaceType:
 		ns := obj.(*kapi.Namespace)
@@ -1018,8 +1069,7 @@ func (h *defaultNetworkControllerEventHandler) SyncFunc(objs []interface{}) erro
 			syncFunc = nil
 
 		case factory.EgressIPPodType,
-			factory.EgressIPType,
-			factory.CloudPrivateIPConfigType:
+			factory.EgressIPType:
 			syncFunc = nil
 
 		case factory.NamespaceType:

@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	kapi "k8s.io/api/core/v1"
@@ -26,12 +24,15 @@ import (
 	honode "github.com/ovn-org/ovn-kubernetes/go-controller/hybrid-overlay/pkg/controller"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	adminpolicybasedrouteclientset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/clientset/versioned"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/informer"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/controllers/egressservice"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/controllers/upgrade"
 	nodeipt "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/iptables"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node/ovspinning"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/apbroute"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
 	retry "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -41,14 +42,12 @@ import (
 )
 
 type CommonNodeNetworkControllerInfo struct {
-	client       clientset.Interface
-	Kube         kube.Interface
-	watchFactory factory.NodeWatchFactory
-	recorder     record.EventRecorder
-	name         string
-
-	// atomic integer value to indicate if PortBinding.up is supported
-	atomicOvnUpEnabled int32
+	client                 clientset.Interface
+	Kube                   kube.Interface
+	watchFactory           factory.NodeWatchFactory
+	recorder               record.EventRecorder
+	name                   string
+	apbExternalRouteClient adminpolicybasedrouteclientset.Interface
 }
 
 // BaseNodeNetworkController structure per-network fields and network specific configuration
@@ -70,28 +69,23 @@ type BaseNodeNetworkController struct {
 	wg       *sync.WaitGroup
 }
 
-func newCommonNodeNetworkControllerInfo(kubeClient clientset.Interface, kube kube.Interface,
-	wf factory.NodeWatchFactory, eventRecorder record.EventRecorder, name string,
-	isOvnUpEnabled bool) *CommonNodeNetworkControllerInfo {
-	var atomicOvnUpEnabled int32
-	if isOvnUpEnabled {
-		atomicOvnUpEnabled = 1
-	}
+func newCommonNodeNetworkControllerInfo(kubeClient clientset.Interface, kube kube.Interface, apbExternalRouteClient adminpolicybasedrouteclientset.Interface,
+	wf factory.NodeWatchFactory, eventRecorder record.EventRecorder, name string) *CommonNodeNetworkControllerInfo {
 
 	return &CommonNodeNetworkControllerInfo{
-		client:             kubeClient,
-		Kube:               kube,
-		watchFactory:       wf,
-		name:               name,
-		recorder:           eventRecorder,
-		atomicOvnUpEnabled: atomicOvnUpEnabled,
+		client:                 kubeClient,
+		Kube:                   kube,
+		apbExternalRouteClient: apbExternalRouteClient,
+		watchFactory:           wf,
+		name:                   name,
+		recorder:               eventRecorder,
 	}
 }
 
 // NewCommonNodeNetworkControllerInfo creates and returns the base node network controller info
-func NewCommonNodeNetworkControllerInfo(kubeClient clientset.Interface, wf factory.NodeWatchFactory,
-	eventRecorder record.EventRecorder, name string, isOvnUpEnabled bool) *CommonNodeNetworkControllerInfo {
-	return newCommonNodeNetworkControllerInfo(kubeClient, &kube.Kube{KClient: kubeClient}, wf, eventRecorder, name, isOvnUpEnabled)
+func NewCommonNodeNetworkControllerInfo(kubeClient clientset.Interface, apbExternalRouteClient adminpolicybasedrouteclientset.Interface, wf factory.NodeWatchFactory,
+	eventRecorder record.EventRecorder, name string) *CommonNodeNetworkControllerInfo {
+	return newCommonNodeNetworkControllerInfo(kubeClient, &kube.Kube{KClient: kubeClient}, apbExternalRouteClient, wf, eventRecorder, name)
 }
 
 // DefaultNodeNetworkController is the object holder for utilities meant for node management of default network
@@ -108,10 +102,13 @@ type DefaultNodeNetworkController struct {
 	retryNamespaces *retry.RetryFramework
 	// retry framework for endpoint slices, used for the removal of stale conntrack entries for services
 	retryEndpointSlices *retry.RetryFramework
+
+	apbExternalRouteNodeController *apbroute.ExternalGatewayNodeController
 }
 
 func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, stopChan chan struct{},
 	wg *sync.WaitGroup) *DefaultNodeNetworkController {
+
 	return &DefaultNodeNetworkController{
 		BaseNodeNetworkController: BaseNodeNetworkController{
 			CommonNodeNetworkControllerInfo: *cnnci,
@@ -119,19 +116,19 @@ func newDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo, sto
 			stopChan:                        stopChan,
 			wg:                              wg,
 		},
-		routeManager: newRouteManager(wg, true, 2*time.Minute),
+		routeManager: newRouteManager(true, 2*time.Minute),
 	}
 }
 
 // NewDefaultNodeNetworkController creates a new network controller for node management of the default network
 func NewDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo) (*DefaultNodeNetworkController, error) {
+	var err error
 	stopChan := make(chan struct{})
 	wg := &sync.WaitGroup{}
 	nc := newDefaultNodeNetworkController(cnnci, stopChan, wg)
 
 	if len(config.Kubernetes.HealthzBindAddress) != 0 {
 		klog.Infof("Enable node proxy healthz server on %s", config.Kubernetes.HealthzBindAddress)
-		var err error
 		nc.healthzServer, err = newNodeProxyHealthzServer(
 			nc.name, config.Kubernetes.HealthzBindAddress, nc.recorder, nc.watchFactory)
 		if err != nil {
@@ -139,7 +136,17 @@ func NewDefaultNodeNetworkController(cnnci *CommonNodeNetworkControllerInfo) (*D
 		}
 	}
 
+	nc.apbExternalRouteNodeController, err = apbroute.NewExternalNodeController(
+		cnnci.apbExternalRouteClient,
+		nc.watchFactory.PodCoreInformer(),
+		nc.watchFactory.NamespaceInformer(),
+		stopChan)
+	if err != nil {
+		return nil, err
+	}
+
 	nc.initRetryFrameworkForNode()
+
 	return nc, nil
 }
 
@@ -356,7 +363,7 @@ func setupOVNNode(node *kapi.Node) error {
 func isOVNControllerReady() (bool, error) {
 	// check node's connection status
 	runDir := util.GetOvnRunDir()
-	pid, err := ioutil.ReadFile(runDir + "ovn-controller.pid")
+	pid, err := os.ReadFile(runDir + "ovn-controller.pid")
 	if err != nil {
 		return false, fmt.Errorf("unknown pid for ovn-controller process: %v", err)
 	}
@@ -607,6 +614,60 @@ func getOVNSBZone() (string, error) {
 	return dbZone, nil
 }
 
+/** HACK BEGIN **/
+// TODO(tssurya): Remove this HACK a few months from now.
+// checkOVNSBNodeLRSR returns true if the logical router static route for the
+// the given nodeSubnet is present in the SBDB
+func checkOVNSBNodeLRSR(nodeSubnet *net.IPNet) bool {
+	var matchv4, matchv6 string
+	v6 := true
+	v4 := true
+	if config.IPv6Mode && utilnet.IsIPv6CIDR(nodeSubnet) {
+		matchv6 = fmt.Sprintf("match=\"reg7 == 0 && ip6.dst == %s\"", nodeSubnet)
+		stdout, stderr, err := util.RunOVNSbctl("--bare", "--columns", "_uuid", "find", "logical_flow", matchv6)
+		klog.Infof("Upgrade Hack: checkOVNSBNodeLRSR for node - %s : match %s : stdout - %s : stderr - %s : err %v",
+			nodeSubnet, matchv6, stdout, stderr, err)
+		v6 = (err == nil && stderr == "" && stdout != "")
+	}
+	if config.IPv4Mode && !utilnet.IsIPv6CIDR(nodeSubnet) {
+		matchv4 = fmt.Sprintf("match=\"reg7 == 0 && ip4.dst == %s\"", nodeSubnet)
+		stdout, stderr, err := util.RunOVNSbctl("--bare", "--columns", "_uuid", "find", "logical_flow", matchv4)
+		klog.Infof("Upgrade Hack: checkOVNSBNodeLRSR for node - %s : match %s : stdout - %s : stderr - %s : err %v",
+			nodeSubnet, matchv4, stdout, stderr, err)
+		v4 = (err == nil && stderr == "" && stdout != "")
+	}
+	return v6 && v4
+}
+
+func fetchLBNames() string {
+	stdout, stderr, err := util.RunOVNSbctl("--bare", "--columns", "name", "find", "Load_Balancer")
+	if err != nil || stderr != "" {
+		klog.Errorf("Upgrade hack: fetchLBNames could not fetch services %v/%v", err, stderr)
+		return stdout // will be empty and we will retry
+	}
+	klog.Infof("Upgrade Hack: fetchLBNames: stdout - %s : stderr - %s : err %v", stdout, stderr, err)
+	return stdout
+}
+
+// lbExists returns true if the OVN load balancer for the corresponding namespace/name
+// was created
+func lbExists(lbNames, namespace, name string) bool {
+	stitchedServiceName := "Service_" + namespace + "/" + name
+	match := strings.Contains(lbNames, stitchedServiceName)
+	klog.Infof("Upgrade Hack: lbExists for service - %s/%s/%s : match - %v",
+		namespace, name, stitchedServiceName, match)
+	return match
+}
+
+func portExists(namespace, name string) bool {
+	lspName := fmt.Sprintf("logical_port=%s", util.GetLogicalPortName(namespace, name))
+	stdout, stderr, err := util.RunOVNSbctl("--bare", "--columns", "_uuid", "find", "Port_Binding", lspName)
+	klog.Infof("Upgrade Hack: portExists for pod - %s/%s : stdout - %s : stderr - %s", namespace, name, stdout, stderr)
+	return err == nil && stderr == "" && stdout != ""
+}
+
+/** HACK END **/
+
 // Start learns the subnets assigned to it by the master controller
 // and calls the SetupNode script which establishes the logical switch
 func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
@@ -623,8 +684,11 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	if err := level.Set("5"); err != nil {
 		klog.Errorf("Setting klog \"loglevel\" to 5 failed, err: %v", err)
 	}
-	go nc.routeManager.run(ctx.Done())
-
+	nc.wg.Add(1)
+	go func() {
+		defer nc.wg.Done()
+		nc.routeManager.run(nc.stopChan)
+	}()
 	if node, err = nc.Kube.GetNode(nc.name); err != nil {
 		return fmt.Errorf("error retrieving node %s: %v", nc.name, err)
 	}
@@ -641,26 +705,32 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	// Make sure that the node zone matches with the Southbound db zone.
 	// Wait for 300s before giving up
 	var sbZone string
-	err = wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
+	var err1 error
+	err = wait.PollUntilContextTimeout(context.Background(), 500*time.Millisecond, 300*time.Second, true, func(ctx context.Context) (bool, error) {
 		sbZone, err = getOVNSBZone()
 		if err != nil {
-			return false, fmt.Errorf("failed to get the zone name from the OVN Southbound db server, err : %w", err)
+			err1 = fmt.Errorf("failed to get the zone name from the OVN Southbound db server, err : %w", err)
+			return false, nil
 		}
 
 		if config.Default.Zone != sbZone {
-			return false, fmt.Errorf("node %s zone %s mismatch with the Southbound zone %s", nc.name, config.Default.Zone, sbZone)
+			err1 = fmt.Errorf("node %s zone %s mismatch with the Southbound zone %s", nc.name, config.Default.Zone, sbZone)
+			return false, nil
 		}
 		return true, nil
 	})
 
 	if err != nil {
-		return fmt.Errorf("timed out waiting for the node zone %s to match the OVN Southbound db zone, err : %w", config.Default.Zone, err)
+		return fmt.Errorf("timed out waiting for the node zone %s to match the OVN Southbound db zone, err: %v, err1: %v", config.Default.Zone, err, err1)
 	}
 
 	if config.OvnKubeNode.Mode != types.NodeModeDPUHost {
-		for _, auth := range []config.OvnAuthConfig{config.OvnNorth, config.OvnSouth} {
-			if err := auth.SetDBAuth(); err != nil {
-				return err
+		// if its nonIC OR IC=true and if its phase1 OR if its IC to IC upgrades
+		if !config.OVNKubernetesFeature.EnableInterconnect || sbZone == types.OvnDefaultZone || util.HasNodeMigratedZone(node) { // if its nonIC or if its phase1
+			for _, auth := range []config.OvnAuthConfig{config.OvnNorth, config.OvnSouth} {
+				if err := auth.SetDBAuth(); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -671,7 +741,7 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	}
 
 	// First wait for the node logical switch to be created by the Master, timeout is 300s.
-	err = wait.PollImmediate(500*time.Millisecond, 300*time.Second, func() (bool, error) {
+	err = wait.PollUntilContextTimeout(context.Background(), 500*time.Millisecond, 300*time.Second, true, func(ctx context.Context) (bool, error) {
 		if node, err = nc.Kube.GetNode(nc.name); err != nil {
 			klog.Infof("Waiting to retrieve node %s: %v", nc.name, err)
 			return false, nil
@@ -689,13 +759,12 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	klog.Infof("Node %s ready for ovn initialization with subnet %s", nc.name, util.JoinIPNets(subnets, ","))
 
 	// Create CNI Server
-	isOvnUpEnabled := atomic.LoadInt32(&nc.atomicOvnUpEnabled) > 0
 	if config.OvnKubeNode.Mode != types.NodeModeDPU {
 		kclient, ok := nc.Kube.(*kube.Kube)
 		if !ok {
 			return fmt.Errorf("cannot get kubeclient for starting CNI server")
 		}
-		cniServer, err = cni.NewCNIServer(isOvnUpEnabled, nc.watchFactory, kclient.KClient)
+		cniServer, err = cni.NewCNIServer(nc.watchFactory, kclient.KClient)
 		if err != nil {
 			return err
 		}
@@ -750,6 +819,119 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 	if err := nodeAnnotator.Run(); err != nil {
 		return fmt.Errorf("failed to set node %s annotations: %w", nc.name, err)
 	}
+
+	/** HACK BEGIN **/
+	// TODO(tssurya): Remove this HACK a few months from now. This has been added only to
+	// minimize disruption for upgrades when moving to interconnect=true.
+	// We want the legacy ovnkube-master to wait for remote ovnkube-node to
+	// signal it using "k8s.ovn.org/remote-zone-migrated" annotation before
+	// considering a node as remote when we upgrade from "global" (1 zone IC)
+	// zone to multi-zone. This is so that network disruption for the existing workloads
+	// is negligible and until the point where ovnkube-node flips the switch to connect
+	// to the new SBDB, it would continue talking to the legacy RAFT ovnkube-sbdb to ensure
+	// OVN/OVS flows are intact.
+	// STEP1: ovnkube-node start's up in remote zone and sets the "k8s.ovn.org/zone-name" above.
+	// STEP2: We delay the flip of connection for ovnkube-node(ovn-controller) to the new remote SBDB
+	//        until the new remote ovnkube-controller has finished programming all the K8s core objects
+	//        like routes, services and pods. Until then the ovnkube-node will talk to legacy SBDB.
+	// STEP3: Once we get the signal that the new SBDB is ready, we set the "k8s.ovn.org/remote-zone-migrated" annotation
+	// STEP4: We call setDBAuth to now point to new SBDB
+	// STEP5: Legacy ovnkube-master sees "k8s.ovn.org/remote-zone-migrated" annotation on this node and now knows that
+	//        this node has remote-zone-migrated successfully and tears down old setup and creates new IC resource
+	//        plumbing (takes 80ms based on what we saw in CI runs so we might still have that small window of disruption).
+	var syncNodes, syncServices, syncPods bool
+	if config.OVNKubernetesFeature.EnableInterconnect && sbZone != types.OvnDefaultZone && !util.HasNodeMigratedZone(node) { // so this should be done only once in phase2 (not in phase1)
+		klog.Info("Upgrade Hack: Interconnect is enabled")
+		var err1 error
+		start := time.Now()
+		err = wait.PollUntilContextTimeout(context.Background(), 500*time.Millisecond, 300*time.Second, true, func(ctx context.Context) (bool, error) {
+			// we loop through all the nodes in the cluster and ensure ovnkube-controller has finished creating the LRSR required for pod2pod overlay communication
+			if !syncNodes {
+				nodes, err := nc.Kube.GetNodes()
+				if err != nil {
+					err1 = fmt.Errorf("upgrade hack: error retrieving node %s: %v", nc.name, err)
+					return false, nil
+				}
+				for _, node := range nodes.Items {
+					if nc.name != node.Name && util.GetNodeZone(&node) != config.Default.Zone {
+						nodeSubnets, err := util.ParseNodeHostSubnetAnnotation(&node, types.DefaultNetworkName)
+						if err != nil {
+							err1 = fmt.Errorf("unable to fetch node-subnet annotation for node %s: err, %v", node.Name, err)
+							return false, nil
+						}
+						for _, nodeSubnet := range nodeSubnets {
+							klog.Infof("Upgrade Hack: node %s, subnet %s", node.Name, nodeSubnet)
+							if !checkOVNSBNodeLRSR(nodeSubnet) {
+								err1 = fmt.Errorf("upgrade hack: unable to find LRSR for node %s", node.Name)
+								return false, nil
+							}
+						}
+					}
+				}
+				syncNodes = true
+			}
+			klog.Infof("Upgrade Hack: Syncing nodes took %v", time.Since(start))
+			// we loop through all existing services in the cluster and ensure ovnkube-controller has finished creating LoadBalancers required for services to work
+			if !syncServices {
+				services, err := nc.watchFactory.GetServices()
+				if err != nil {
+					err1 = fmt.Errorf("upgrade hack: error retrieving the services %v", err)
+					return false, nil
+				}
+				lbNames := fetchLBNames()
+				for _, s := range services {
+					// don't process headless service
+					if !util.ServiceTypeHasClusterIP(s) || !util.IsClusterIPSet(s) {
+						continue
+					}
+					if !lbExists(lbNames, s.Namespace, s.Name) {
+						return false, nil
+					}
+				}
+				syncServices = true
+			}
+			klog.Infof("Upgrade Hack: Syncing services took %v", time.Since(start))
+			if !syncPods {
+				pods, err := nc.watchFactory.GetAllPods()
+				if err != nil {
+					err1 = fmt.Errorf("upgrade hack: error retrieving the services %v", err)
+					return false, nil
+				}
+				for _, p := range pods {
+					if !util.PodScheduled(p) || util.PodCompleted(p) || util.PodWantsHostNetwork(p) {
+						continue
+					}
+					if p.Spec.NodeName != nc.name {
+						// remote pod
+						continue
+					}
+					if !portExists(p.Namespace, p.Name) {
+						return false, nil
+					}
+				}
+				syncPods = true
+			}
+			klog.Infof("Upgrade Hack: Syncing pods took %v", time.Since(start))
+			return true, nil
+		})
+		if err != nil {
+			klog.Exitf("Upgrade hack: Timed out waiting for the remote ovnkube-controller to be ready even after 5 minutes, err : %v, %v", err, err1)
+		}
+		if err := util.SetNodeZoneMigrated(nodeAnnotator, sbZone); err != nil {
+			klog.Exitf("Upgrade hack: failed to set node zone annotation for node %s: %w", nc.name, err)
+		}
+		if err := nodeAnnotator.Run(); err != nil {
+			klog.Exitf("Upgrade hack: failed to set node %s annotations: %w", nc.name, err)
+		}
+		klog.Infof("ovnkube-node %s finished annotating node with remote-zone-migrated; took: %v", nc.name, time.Since(start))
+		for _, auth := range []config.OvnAuthConfig{config.OvnNorth, config.OvnSouth} {
+			if err := auth.SetDBAuth(); err != nil {
+				klog.Exitf("Upgrade hack: Unable to set the authentication towards OVN local dbs")
+			}
+		}
+		klog.Infof("Upgrade hack: ovnkube-node %s finished setting DB Auth; took: %v", nc.name, time.Since(start))
+	}
+	/** HACK END **/
 
 	// Wait for management port and gateway resources to be created by the master
 	klog.Infof("Waiting for gateway and management port readiness...")
@@ -830,20 +1012,6 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 					if err := upgradeServiceRoute(nc.routeManager, bridgeName); err != nil {
 						klog.Fatalf("Failed to upgrade service route for node, error: %v", err)
 					}
-				}
-			}
-
-			// ensure CNI support for port binding built into OVN, as masters have been upgraded
-			if initialTopoVersion < types.OvnPortBindingTopoVersion && !isOvnUpEnabled && !config.OvnKubeNode.DisableOVNIfaceIdVer {
-				isOvnUpEnabled, err := util.GetOVNIfUpCheckMode()
-				if err != nil {
-					klog.Errorf("%v", err)
-				} else if isOvnUpEnabled {
-					klog.Infof("Detected support for port binding with external IDs")
-					if cniServer != nil {
-						cniServer.EnableOVNPortUpSupport()
-					}
-					atomic.StoreInt32(&nc.atomicOvnUpEnabled, 1)
 				}
 			}
 		}()
@@ -935,12 +1103,21 @@ func (nc *DefaultNodeNetworkController) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		nc.wg.Add(1)
-		go func() {
-			defer nc.wg.Done()
-			c.Run(1)
-		}()
+		if err = c.Run(nc.wg, 1); err != nil {
+			return err
+		}
 	}
+	if config.OVNKubernetesFeature.EnableMultiExternalGateway {
+		if err = nc.apbExternalRouteNodeController.Run(nc.wg, 1); err != nil {
+			return err
+		}
+	}
+
+	nc.wg.Add(1)
+	go func() {
+		defer nc.wg.Done()
+		ovspinning.Run(nc.stopChan)
+	}()
 
 	klog.Infof("Default node network controller initialized and ready.")
 	return nil
@@ -1021,8 +1198,8 @@ func (nc *DefaultNodeNetworkController) reconcileConntrackUponEndpointSliceEvent
 					continue
 				}
 				// upon update and delete events, flush conntrack only for UDP
-				err := util.DeleteConntrack(oldIPStr, *oldPort.Port, *oldPort.Protocol, netlink.ConntrackReplyAnyIP, nil)
-				if err != nil {
+				if err := util.DeleteConntrackServicePort(oldIPStr, *oldPort.Port, *oldPort.Protocol,
+					netlink.ConntrackReplyAnyIP, nil); err != nil {
 					klog.Errorf("Failed to delete conntrack entry for %s: %v", oldIPStr, err)
 				}
 			}
@@ -1067,13 +1244,17 @@ func (nc *DefaultNodeNetworkController) checkAndDeleteStaleConntrackEntries() {
 }
 
 func (nc *DefaultNodeNetworkController) syncConntrackForExternalGateways(newNs *kapi.Namespace) error {
+	gatewayIPs, err := nc.apbExternalRouteNodeController.GetAdminPolicyBasedExternalRouteIPsForTargetNamespace(newNs.Name)
+	if err != nil {
+		return fmt.Errorf("unable to retrieve gateway IPs for Admin Policy Based External Route objects: %w", err)
+	}
 	// loop through all the IPs on the annotations; ARP for their MACs and form an allowlist
-	gatewayIPs := strings.Split(newNs.Annotations[util.ExternalGatewayPodIPsAnnotation], ",")
-	gatewayIPs = append(gatewayIPs, strings.Split(newNs.Annotations[util.RoutingExternalGWsAnnotation], ",")...)
+	gatewayIPs = gatewayIPs.Insert(strings.Split(newNs.Annotations[util.ExternalGatewayPodIPsAnnotation], ",")...)
+	gatewayIPs = gatewayIPs.Insert(strings.Split(newNs.Annotations[util.RoutingExternalGWsAnnotation], ",")...)
 	var wg sync.WaitGroup
 	wg.Add(len(gatewayIPs))
 	validMACs := sync.Map{}
-	for _, gwIP := range gatewayIPs {
+	for gwIP := range gatewayIPs {
 		go func(gwIP string) {
 			defer wg.Done()
 			if len(gwIP) > 0 && !utilnet.IsIPv6String(gwIP) {
@@ -1114,23 +1295,23 @@ func (nc *DefaultNodeNetworkController) syncConntrackForExternalGateways(newNs *
 		return fmt.Errorf("unable to get pods from informer: %v", err)
 	}
 
-	var errors []error
+	var errs []error
 	for _, pod := range pods {
 		pod := pod
 		podIPs, err := util.GetPodIPsOfNetwork(pod, &util.DefaultNetInfo{})
-		if err != nil {
-			errors = append(errors, fmt.Errorf("unable to fetch IP for pod %s/%s: %v", pod.Namespace, pod.Name, err))
+		if err != nil && !errors.Is(err, util.ErrNoPodIPFound) {
+			errs = append(errs, fmt.Errorf("unable to fetch IP for pod %s/%s: %v", pod.Namespace, pod.Name, err))
 		}
 		for _, podIP := range podIPs { // flush conntrack only for UDP
 			// for this pod, we check if the conntrack entry has a label that is not in the provided allowlist of MACs
 			// only caveat here is we assume egressGW served pods shouldn't have conntrack entries with other labels set
 			err := util.DeleteConntrack(podIP.String(), 0, kapi.ProtocolUDP, netlink.ConntrackOrigDstIP, validNextHopMACs)
 			if err != nil {
-				errors = append(errors, fmt.Errorf("failed to delete conntrack entry for pod %s: %v", podIP.String(), err))
+				errs = append(errs, fmt.Errorf("failed to delete conntrack entry for pod %s: %v", podIP.String(), err))
 			}
 		}
 	}
-	return apierrors.NewAggregate(errors)
+	return apierrors.NewAggregate(errs)
 }
 
 func (nc *DefaultNodeNetworkController) WatchNamespaces() error {

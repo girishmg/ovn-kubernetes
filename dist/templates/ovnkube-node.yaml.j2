@@ -39,7 +39,18 @@ spec:
       - name: ovnkube-node
         image: "{{ ovn_image | default('docker.io/ovnkube/ovn-daemonset:latest') }}"
         imagePullPolicy: "{{ ovn_image_pull_policy | default('IfNotPresent') }}"
-
+        {% if ovn_dummy_gateway_bridge=="true" %}
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - |
+                #!/bin/bash
+                ovs-vsctl --may-exist add-br br-ex
+                ip a a dev br-ex 10.44.0.1/32 || /bin/true
+        {% endif %}
         command: ["/root/ovnkube.sh", "ovn-node"]
 
         securityContext:
@@ -85,7 +96,7 @@ spec:
           name: host-ovn-cert
           readOnly: true
         - mountPath: /etc/openvswitch/
-          name: host-var-lib-ovs
+          name: host-etc-ovs
           readOnly: true
         - mountPath: /etc/ovn/
           name: host-var-lib-ovs
@@ -206,6 +217,10 @@ spec:
           value: "{{ ovn_lflow_cache_limit_kb }}"
         - name: OVN_MULTI_NETWORK_ENABLE
           value: "{{ ovn_multi_network_enable }}"
+        - name: OVN_ENABLE_INTERCONNECT
+          value: "{{ ovn_enable_interconnect }}"
+        - name: OVN_ENABLE_MULTI_EXTERNAL_GATEWAY
+          value: "{{ ovn_enable_multi_external_gateway }}"
         {% endif -%}
         {% if ovnkube_app_name=="ovnkube-node-dpu-host" -%}
         - name: OVNKUBE_NODE_MODE
@@ -274,6 +289,10 @@ spec:
             configMapKeyRef:
               name: ovn-config
               key: k8s_apiserver
+        - name: K8S_NODE
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         - name: OVN_KUBERNETES_NAMESPACE
           valueFrom:
             fieldRef:
@@ -381,6 +400,9 @@ spec:
       - name: host-var-lib-ovs
         hostPath:
           path: /var/lib/openvswitch
+      - name: host-etc-ovs
+        hostPath:
+          path: /etc/openvswitch
       {%- elif ovnkube_app_name=="ovnkube-node-dpu-host" %}
       - name: var-run-ovn
         emptyDir: {}

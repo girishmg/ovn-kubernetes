@@ -112,6 +112,7 @@ usage() {
     echo "                 [-ehp|--egress-ip-healthcheck-port <num>]"
     echo "                 [-is | --ipsec]"
     echo "                 [-cm | --compact-mode]"
+    echo "                 [-ic | --enable-interconnect]"
     echo "                 [--isolated]"
     echo "                 [-h]]"
     echo ""
@@ -136,6 +137,7 @@ usage() {
     echo "-el  | --ovn-empty-lb-events        Enable empty-lb-events generation for LB without backends. DEFAULT: Disabled"
     echo "-ii  | --install-ingress            Flag to install Ingress Components."
     echo "                                    DEFAULT: Don't install ingress components."
+    echo "-mlb | --install-metallb            Install metallb to test service type LoadBalancer deployments"
     echo "-n4  | --no-ipv4                    Disable IPv4. DEFAULT: IPv4 Enabled."
     echo "-i6  | --ipv6                       Enable IPv6. DEFAULT: IPv6 Disabled."
     echo "-wk  | --num-workers                Number of worker nodes. DEFAULT: HA - 2 worker"
@@ -163,6 +165,8 @@ usage() {
     echo "-is  | --ipsec                      Enable IPsec encryption (spawns ovn-ipsec pods)"
     echo "-sm  | --scale-metrics              Enable scale metrics"
     echo "-cm  | --compact-mode               Enable compact mode, ovnkube master and node run in the same process."
+    echo "-ic  | --enable-interconnect        Enable interconnect with each node as a zone (only valid if OVN_HA is false)"
+    echo "-npz | --nodes-per-zone             If interconnect is enabled, number of nodes per zone (Default 1). If this value > 1, then (total k8s nodes (workers + 1) / num of nodes per zone) should be zero."
     echo "--isolated                          Deploy with an isolated environment (no default gateway)"
     echo "--delete                            Delete current cluster"
     echo "--deploy                            Deploy ovn kubernetes without restarting kind"
@@ -185,6 +189,8 @@ parse_args() {
             -mlb | --install-metallb )          KIND_INSTALL_METALLB=true
                                                 ;;
             -pl | --install-cni-plugins )       KIND_INSTALL_PLUGINS=true
+                                                ;;
+            -ikv | --install-kubevirt)          KIND_INSTALL_KUBEVIRT=true
                                                 ;;
             -ha | --ha-enabled )                OVN_HA=true
                                                 ;;
@@ -237,9 +243,15 @@ parse_args() {
                                                 fi
                                                 KIND_NUM_WORKER=$1
                                                 ;;
-            -sw | --allow-system-writes )       KIND_ALLOW_SYSTEM_WRITES=true
+            -npz | --nodes-per-zone )           shift
+                                                if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+                                                    echo "Invalid num-nodes-per-zone: $1"
+                                                    usage
+                                                    exit 1
+                                                fi
+                                                KIND_NUM_NODES_PER_ZONE=$1
                                                 ;;
-            -scm | --separate-cluster-manager)  OVN_SEPARATE_CLUSTER_MANAGER=true
+            -sw | --allow-system-writes )       KIND_ALLOW_SYSTEM_WRITES=true
                                                 ;;
             -gm | --gateway-mode )              shift
                                                 if [ "$1" != "local" ] && [ "$1" != "shared" ]; then
@@ -248,6 +260,8 @@ parse_args() {
                                                     exit 1
                                                 fi
                                                 OVN_GATEWAY_MODE=$1
+                                                ;;
+            -dgb | --dummy-gateway-bridge)      OVN_DUMMY_GATEWAY_BRIDGE=true
                                                 ;;
             -ov | --ovn-image )           	    shift
                                           	    OVN_IMAGE=$1
@@ -319,8 +333,9 @@ parse_args() {
                                                 ;;
             --isolated )                        OVN_ISOLATED=true
                                                 ;;
-            -mne | --multi-network-enable )     shift
-                                                ENABLE_MULTI_NET=true
+            -mne | --multi-network-enable )     ENABLE_MULTI_NET=true
+                                                ;;
+            -ic | --enable-interconnect )       OVN_ENABLE_INTERCONNECT=true
                                                 ;;
             --delete )                          delete
                                                 exit
@@ -345,6 +360,7 @@ print_params() {
      echo "KIND_INSTALL_INGRESS = $KIND_INSTALL_INGRESS"
      echo "KIND_INSTALL_METALLB = $KIND_INSTALL_METALLB"
      echo "KIND_INSTALL_PLUGINS = $KIND_INSTALL_PLUGINS"
+     echo "KIND_INSTALL_KUBEVIRT = $KIND_INSTALL_KUBEVIRT"
      echo "OVN_HA = $OVN_HA"
      echo "RUN_IN_CONTAINER = $RUN_IN_CONTAINER"
      echo "KIND_CLUSTER_NAME = $KIND_CLUSTER_NAME"
@@ -357,10 +373,10 @@ print_params() {
      echo "KIND_IPV4_SUPPORT = $KIND_IPV4_SUPPORT"
      echo "KIND_IPV6_SUPPORT = $KIND_IPV6_SUPPORT"
      echo "ENABLE_IPSEC = $ENABLE_IPSEC"
-     echo "KIND_NUM_WORKER = $KIND_NUM_WORKER"
      echo "KIND_ALLOW_SYSTEM_WRITES = $KIND_ALLOW_SYSTEM_WRITES"
      echo "KIND_EXPERIMENTAL_PROVIDER = $KIND_EXPERIMENTAL_PROVIDER"
      echo "OVN_GATEWAY_MODE = $OVN_GATEWAY_MODE"
+     echo "OVN_DUMMY_GATEWAY_BRIDGE = $OVN_DUMMY_GATEWAY_BRIDGE"
      echo "OVN_HYBRID_OVERLAY_ENABLE = $OVN_HYBRID_OVERLAY_ENABLE"
      echo "OVN_DISABLE_SNAT_MULTIPLE_GWS = $OVN_DISABLE_SNAT_MULTIPLE_GWS"
      echo "OVN_DISABLE_FORWARDING = $OVN_DISABLE_FORWARDING"
@@ -390,7 +406,11 @@ print_params() {
      echo "OVN_METRICS_SCALE_ENABLE = $OVN_METRICS_SCALE_ENABLE"
      echo "OVN_ISOLATED = $OVN_ISOLATED"
      echo "ENABLE_MULTI_NET = $ENABLE_MULTI_NET"
-     echo "OVN_SEPARATE_CLUSTER_MANAGER = $OVN_SEPARATE_CLUSTER_MANAGER"
+     echo "OVN_ENABLE_INTERCONNECT = $OVN_ENABLE_INTERCONNECT"
+     if [ "$OVN_ENABLE_INTERCONNECT" == true ]; then
+       echo "KIND_NUM_NODES_PER_ZONE = $KIND_NUM_NODES_PER_ZONE"
+     fi
+     echo "KIND_NUM_WORKER = $KIND_NUM_WORKER"
      echo ""
 }
 
@@ -482,11 +502,12 @@ set_default_params() {
   fi
   RUN_IN_CONTAINER=${RUN_IN_CONTAINER:-false}
   KIND_IMAGE=${KIND_IMAGE:-kindest/node}
-  K8S_VERSION=${K8S_VERSION:-v1.26.0}
+  K8S_VERSION=${K8S_VERSION:-v1.26.3}
   OVN_GATEWAY_MODE=${OVN_GATEWAY_MODE:-shared}
   KIND_INSTALL_INGRESS=${KIND_INSTALL_INGRESS:-false}
   KIND_INSTALL_METALLB=${KIND_INSTALL_METALLB:-false}
   KIND_INSTALL_PLUGINS=${KIND_INSTALL_PLUGINS:-false}
+  KIND_INSTALL_KUBEVIRT=${KIND_INSTALL_KUBEVIRT:-false}
   OVN_HA=${OVN_HA:-false}
   KIND_LOCAL_REGISTRY=${KIND_LOCAL_REGISTRY:-false}
   KIND_LOCAL_REGISTRY_NAME=${KIND_LOCAL_REGISTRY_NAME:-kind-registry}
@@ -531,24 +552,50 @@ set_default_params() {
   JOIN_SUBNET_IPV4=${JOIN_SUBNET_IPV4:-100.64.0.0/16}
   JOIN_SUBNET_IPV6=${JOIN_SUBNET_IPV6:-fd98::/64}
   KIND_NUM_MASTER=1
+  OVN_ENABLE_INTERCONNECT=${OVN_ENABLE_INTERCONNECT:-false}
+
+  if [ "$OVN_HA" == true ] && [ "$OVN_ENABLE_INTERCONNECT" != false ]; then
+     echo "HA mode cannot be used together with Interconnect"
+     exit 1
+  fi
+
+  if [ "$OVN_COMPACT_MODE" == true ] && [ "$OVN_ENABLE_INTERCONNECT" != false ]; then
+     echo "Compact mode cannot be used together with Interconnect"
+     exit 1
+  fi
+
   if [ "$OVN_HA" == true ]; then
     KIND_NUM_MASTER=3
     KIND_NUM_WORKER=${KIND_NUM_WORKER:-0}
   else
     KIND_NUM_WORKER=${KIND_NUM_WORKER:-2}
   fi
+
+  if [ "$OVN_ENABLE_INTERCONNECT" == true ]; then
+    KIND_NUM_NODES_PER_ZONE=${KIND_NUM_NODES_PER_ZONE:-1}
+
+    TOTAL_NODES=$((KIND_NUM_WORKER + 1))
+    if [[ ${KIND_NUM_NODES_PER_ZONE} -gt 1 ]] && [[ $((TOTAL_NODES % KIND_NUM_NODES_PER_ZONE)) -ne 0 ]]; then
+      echo "(Total k8s nodes / number of nodes per zone) should be zero"
+      exit 1
+    fi
+  fi
+
   OVN_HOST_NETWORK_NAMESPACE=${OVN_HOST_NETWORK_NAMESPACE:-ovn-host-network}
   OVN_EGRESSIP_HEALTHCHECK_PORT=${OVN_EGRESSIP_HEALTHCHECK_PORT:-9107}
   OCI_BIN=${KIND_EXPERIMENTAL_PROVIDER:-docker}
-  OVN_DEPLOY_PODS=${OVN_DEPLOY_PODS:-"ovnkube-master ovnkube-node"}
+  OVN_DEPLOY_PODS=${OVN_DEPLOY_PODS:-"ovnkube-zone-controller ovnkube-control-plane ovnkube-master ovnkube-node"}
   OVN_METRICS_SCALE_ENABLE=${OVN_METRICS_SCALE_ENABLE:-false}
   OVN_ISOLATED=${OVN_ISOLATED:-false}
-  OVN_GATEWAY_OPTS=""
+  OVN_GATEWAY_OPTS=${OVN_GATEWAY_OPTS:-""}
   if [ "$OVN_ISOLATED" == true ]; then
     OVN_GATEWAY_OPTS="--gateway-interface=eth0"
   fi
+  OVN_DUMMY_GATEWAY_BRIDGE=${OVN_DUMMY_GATEWAY_BRIDGE:-false}
+  if [ "$OVN_DUMMY_GATEWAY_BRIDGE" == true ]; then
+    OVN_GATEWAY_OPTS="--allow-no-uplink --gateway-interface=br-ex"
+  fi
   ENABLE_MULTI_NET=${ENABLE_MULTI_NET:-false}
-  OVN_SEPARATE_CLUSTER_MANAGER=${OVN_SEPARATE_CLUSTER_MANAGER:-false}
   OVN_COMPACT_MODE=${OVN_COMPACT_MODE:-false}
   if [ "$OVN_COMPACT_MODE" == true ]; then
     KIND_NUM_WORKER=0
@@ -706,7 +753,9 @@ docker_disable_ipv6() {
 
 coredns_patch() {
   dns_server="8.8.8.8"
-  if [ "$KIND_IPV6_SUPPORT" == true ]; then
+  # No need for ipv6 nameserver for dual stack, it will ask for 
+  # A and AAAA records
+  if [ "$IP_FAMILY" == "ipv6" ]; then
     dns_server="2001:4860:4860::8888"
   fi
 
@@ -763,6 +812,12 @@ build_ovn_image() {
       $OCI_BIN push "${OVN_IMAGE}"
     fi
     popd
+  # We should push to local registry if image is not remote
+  elif [ "${OVN_IMAGE}" != "" -a "${KIND_LOCAL_REGISTRY}" == true ] && (echo "$OVN_IMAGE" | grep / -vq); then 
+    local local_registry_ovn_image="localhost:5000/${OVN_IMAGE}"
+    $OCI_BIN tag "$OVN_IMAGE" $local_registry_ovn_image
+    OVN_IMAGE=$local_registry_ovn_image
+    $OCI_BIN push $OVN_IMAGE
   fi
 }
 
@@ -780,6 +835,7 @@ create_ovn_kube_manifests() {
     --net-cidr="${NET_CIDR}" \
     --svc-cidr="${SVC_CIDR}" \
     --gateway-mode="${OVN_GATEWAY_MODE}" \
+    --dummy-gateway-bridge="${OVN_DUMMY_GATEWAY_BRIDGE}" \
     --gateway-options="${OVN_GATEWAY_OPTS}" \
     --enable-ipsec="${ENABLE_IPSEC}" \
     --hybrid-enabled="${OVN_HYBRID_OVERLAY_ENABLE}" \
@@ -809,7 +865,9 @@ create_ovn_kube_manifests() {
     --ex-gw-network-interface="${OVN_EX_GW_NETWORK_INTERFACE}" \
     --multi-network-enable="${ENABLE_MULTI_NET}" \
     --ovnkube-metrics-scale-enable="${OVN_METRICS_SCALE_ENABLE}" \
-    --compact-mode="${OVN_COMPACT_MODE}"
+    --compact-mode="${OVN_COMPACT_MODE}" \
+    --enable-interconnect="${OVN_ENABLE_INTERCONNECT}" \
+    --enable-multi-external-gateway=true
   popd
 }
 
@@ -829,6 +887,53 @@ install_ovn_image() {
   fi
 }
 
+install_ovn_global_zone() {
+  if [ "$OVN_HA" == true ]; then
+    run_kubectl apply -f ovnkube-db-raft.yaml
+  else
+    run_kubectl apply -f ovnkube-db.yaml
+  fi
+
+  run_kubectl apply -f ovnkube-master.yaml
+  run_kubectl apply -f ovnkube-node.yaml
+}
+
+install_ovn_single_node_zones() {
+  KIND_NODES=$(kind get nodes --name "${KIND_CLUSTER_NAME}")
+  for n in $KIND_NODES; do
+    kubectl label node "${n}" k8s.ovn.org/zone-name=${n} --overwrite
+  done
+
+  run_kubectl apply -f ovnkube-control-plane.yaml
+  run_kubectl apply -f ovnkube-single-node-zone.yaml
+}
+
+
+install_ovn_multiple_nodes_zones() {
+  KIND_NODES=$(kind get nodes --name "${KIND_CLUSTER_NAME}" | sort)
+  zone_idx=1
+  n=1
+  for node in $KIND_NODES; do
+    zone="zone-${zone_idx}"
+    kubectl label node "${node}" k8s.ovn.org/zone-name=${zone} --overwrite
+    if [ "${n}" == "1" ]; then
+      # Mark 1st node of each zone as zone control plane
+      kubectl label node "${node}" node-role.kubernetes.io/zone-controller="" --overwrite
+    fi
+
+    if [ "${n}" == "${KIND_NUM_NODES_PER_ZONE}" ]; then
+      n=1
+      zone_idx=$((zone_idx+1))
+    else
+      n=$((n+1))
+    fi
+  done
+
+  run_kubectl apply -f ovnkube-control-plane.yaml
+  run_kubectl apply -f ovnkube-zone-controller.yaml
+  run_kubectl apply -f ovnkube-node.yaml
+}
+
 install_ovn() {
   pushd ${MANIFEST_OUTPUT_DIR}
 
@@ -836,6 +941,7 @@ install_ovn() {
   run_kubectl apply -f k8s.ovn.org_egressips.yaml
   run_kubectl apply -f k8s.ovn.org_egressqoses.yaml
   run_kubectl apply -f k8s.ovn.org_egressservices.yaml
+  run_kubectl apply -f k8s.ovn.org_adminpolicybasedexternalroutes.yaml
   run_kubectl apply -f ovn-setup.yaml
   MASTER_NODES=$(kind get nodes --name "${KIND_CLUSTER_NAME}" | sort | head -n "${KIND_NUM_MASTER}")
   # We want OVN HA not Kubernetes HA
@@ -851,18 +957,18 @@ install_ovn() {
       kubectl taint node "$n" node-role.kubernetes.io/control-plane:NoSchedule- || true
     fi
   done
-  if [ "$OVN_HA" == true ]; then
-    run_kubectl apply -f ovnkube-db-raft.yaml
-  else
-    run_kubectl apply -f ovnkube-db.yaml
-  fi
+
   run_kubectl apply -f ovs-node.yaml
-  if [ "$OVN_SEPARATE_CLUSTER_MANAGER" ==  true ]; then
-    run_kubectl apply -f ovnkube-cm-ncm.yaml
+
+  if [ "$OVN_ENABLE_INTERCONNECT" == false ]; then
+    install_ovn_global_zone
   else
-    run_kubectl apply -f ovnkube-master.yaml
+    if [ "${KIND_NUM_NODES_PER_ZONE}" == "1" ]; then
+      install_ovn_single_node_zones
+    else
+      install_ovn_multiple_nodes_zones
+    fi
   fi
-  run_kubectl apply -f ovnkube-node.yaml
 
   popd
 
@@ -978,7 +1084,13 @@ kubectl_wait_pods() {
     kubectl rollout status daemonset -n ovn-kubernetes ${ds} --timeout ${timeout}s
   done
 
-  for name in ovnkube-db ovnkube-master; do
+  pods=""
+  if [ "$OVN_ENABLE_INTERCONNECT" == true ]; then
+    pods="ovnkube-control-plane"
+  else
+    pods="ovnkube-master ovnkube-db"
+  fi
+  for name in ${pods}; do
     timeout=$(calculate_timeout ${endtime})
     echo "Waiting for k8s to create ${name} pods (timeout ${timeout})..."
     kubectl wait pods -n ovn-kubernetes -l name=${name} --for condition=Ready --timeout=${timeout}s
@@ -1057,11 +1169,36 @@ docker_create_second_interface() {
   echo "adding second interfaces to nodes"
 
   # Create the network as dual stack, regardless of the type of the deployment. Ignore if already exists.
-  docker network create --ipv6 --driver=bridge kindexgw --subnet=172.19.0.0/16 --subnet=fc00:f853:ccd:e798::/64 || true
+  "$OCI_BIN" network create --ipv6 --driver=bridge kindexgw --subnet=172.19.0.0/16 --subnet=fc00:f853:ccd:e798::/64 || true
 
   KIND_NODES=$(kind get nodes --name "${KIND_CLUSTER_NAME}")
   for n in $KIND_NODES; do
-    docker network connect kindexgw "$n"
+    "$OCI_BIN" network connect kindexgw "$n"
+  done
+}
+
+docker_create_second_disconnected_interface() {
+  echo "adding second interfaces to nodes"
+  local bridge_name="${1:-kindexgw}"
+  echo "bridge: $bridge_name"
+
+  if [ "${OCI_BIN}" = "podman" ]; then
+    # docker and podman do different things with the --internal parameter:
+    # - docker installs iptables rules to drop traffic on a different subnet
+    #   than the bridge and we don't want that.
+    # - podman does not set the bridge as default gateway and we want that.
+    # So we need it with podman but not with docker. Neither allows us to create
+    # a bridge network without IPAM which would be ideal, so perhaps the best
+    # option would be a manual setup.
+    local podman_params="--internal"
+  fi
+
+  # Create the network without subnets; ignore if already exists.
+  "$OCI_BIN" network create --driver=bridge ${podman_params-} "$bridge_name" || true
+
+  KIND_NODES=$(kind get nodes --name "${KIND_CLUSTER_NAME}")
+  for n in $KIND_NODES; do
+    "$OCI_BIN" network connect "$bridge_name" "$n"
   done
 }
 
@@ -1114,6 +1251,46 @@ add_dns_hostnames() {
   done
 }
 
+function is_nested_virt_enabled() {
+    local kvm_nested="unknown"
+    if [ -f "/sys/module/kvm_intel/parameters/nested" ]; then
+        kvm_nested=$( cat /sys/module/kvm_intel/parameters/nested )
+    elif [ -f "/sys/module/kvm_amd/parameters/nested" ]; then
+        kvm_nested=$( cat /sys/module/kvm_amd/parameters/nested )
+    fi
+    [ "$kvm_nested" == "1" ] || [ "$kvm_nested" == "Y" ] || [ "$kvm_nested" == "y" ]
+}
+
+function install_kubevirt() {
+    for node in $(kubectl get node --no-headers  -o custom-columns=":metadata.name"); do
+        $OCI_BIN exec -t $node bash -c "echo 'fs.inotify.max_user_watches=1048576' >> /etc/sysctl.conf"
+        $OCI_BIN exec -t $node bash -c "echo 'fs.inotify.max_user_instances=512' >> /etc/sysctl.conf"
+        $OCI_BIN exec -i $node bash -c "sysctl -p /etc/sysctl.conf"
+        if [[ "${node}" =~ worker ]]; then
+            kubectl label nodes $node node-role.kubernetes.io/worker="" --overwrite=true
+        fi
+    done
+    local nightly_build_base_url="https://storage.googleapis.com/kubevirt-prow/devel/nightly/release/kubevirt/kubevirt"
+    local latest=$(curl -sL "${nightly_build_base_url}/latest")
+
+    echo "Deploy latest nighly build Kubevirt"
+    if [ "$(kubectl get kubevirts -n kubevirt kubevirt -ojsonpath='{.status.phase}')" != "Deployed" ]; then
+      kubectl apply -f "${nightly_build_base_url}/${latest}/kubevirt-operator.yaml"
+      kubectl apply -f "${nightly_build_base_url}/${latest}/kubevirt-cr.yaml"
+      if ! is_nested_virt_enabled; then
+        kubectl -n kubevirt patch kubevirt kubevirt --type=merge --patch '{"spec":{"configuration":{"developerConfiguration":{"useEmulation":true}}}}'
+      fi
+    fi
+    if ! kubectl wait -n kubevirt kv kubevirt --for condition=Available --timeout 15m; then
+        kubectl get pod -n kubevirt -l || true
+        kubectl describe pod -n kubevirt -l || true
+        for p in $(kubectl get pod -n kubevirt -l -o name |sed "s#pod/##"); do
+            kubectl logs -p --all-containers=true -n kubevirt $p || true
+            kubectl logs --all-containers=true -n kubevirt $p || true
+        done
+    fi
+}
+
 check_dependencies
 # In order to allow providing arguments with spaces, e.g. "-vconsole:info -vfile:info"
 # the original command <parse_args $*> was replaced by <parse_args "$@">
@@ -1160,6 +1337,7 @@ fi
 if [ "$ENABLE_MULTI_NET" == true ]; then
   install_multus
   install_mpolicy_crd
+  docker_create_second_disconnected_interface "underlay"  # localnet scenarios require an extra interface
 fi
 kubectl_wait_pods
 sleep_until_pods_settle
@@ -1174,4 +1352,7 @@ if [ "$KIND_INSTALL_METALLB" == true ]; then
 fi
 if [ "$KIND_INSTALL_PLUGINS" == true ]; then
   install_plugins
+fi
+if [ "$KIND_INSTALL_KUBEVIRT" == true ]; then
+  install_kubevirt
 fi

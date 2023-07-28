@@ -150,6 +150,8 @@ cacert=/path/to/kubeca.crt
 service-cidrs=172.18.0.0/24
 no-hostsubnet-nodes=label=another-test-label
 healthz-bind-address=0.0.0.0:1234
+dns-service-namespace=kube-system-f
+dns-service-name=kube-dns-f
 
 [metrics]
 bind-address=1.1.1.1:8080
@@ -204,6 +206,7 @@ v6-join-subnet=fd90::/64
 router-subnet=10.50.0.0/16
 single-node=false
 disable-forwarding=true
+allow-no-uplink=false
 
 [hybridoverlay]
 enabled=true
@@ -218,6 +221,7 @@ egressip-node-healthcheck-port=1234
 enable-multi-network=false
 enable-multi-networkpolicy=false
 enable-interconnect=false
+enable-multi-external-gateway=false
 `
 
 	var newData string
@@ -295,6 +299,8 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Kubernetes.RawServiceCIDRs).To(gomega.Equal("172.16.1.0/24"))
 			gomega.Expect(Kubernetes.RawNoHostSubnetNodes).To(gomega.Equal(""))
 			gomega.Expect(Kubernetes.HealthzBindAddress).To(gomega.Equal(""))
+			gomega.Expect(Kubernetes.DNSServiceNamespace).To(gomega.Equal("kube-system"))
+			gomega.Expect(Kubernetes.DNSServiceName).To(gomega.Equal("kube-dns"))
 			gomega.Expect(Metrics.NodeServerPrivKey).To(gomega.Equal(""))
 			gomega.Expect(Metrics.NodeServerCert).To(gomega.Equal(""))
 			gomega.Expect(Default.ClusterSubnets).To(gomega.Equal([]CIDRNetworkEntry{
@@ -310,11 +316,13 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Gateway.RouterSubnet).To(gomega.Equal(""))
 			gomega.Expect(Gateway.SingleNode).To(gomega.BeFalse())
 			gomega.Expect(Gateway.DisableForwarding).To(gomega.BeFalse())
+			gomega.Expect(Gateway.AllowNoUplink).To(gomega.BeFalse())
 			gomega.Expect(OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout).To(gomega.Equal(1))
 			gomega.Expect(OVNKubernetesFeature.EgressIPNodeHealthCheckPort).To(gomega.Equal(0))
 			gomega.Expect(OVNKubernetesFeature.EnableMultiNetwork).To(gomega.BeFalse())
 			gomega.Expect(OVNKubernetesFeature.EnableMultiNetworkPolicy).To(gomega.BeFalse())
 			gomega.Expect(OVNKubernetesFeature.EnableInterconnect).To(gomega.BeFalse())
+			gomega.Expect(OVNKubernetesFeature.EnableMultiExternalGateway).To(gomega.BeFalse())
 
 			for _, a := range []OvnAuthConfig{OvnNorth, OvnSouth} {
 				gomega.Expect(a.Scheme).To(gomega.Equal(OvnDBSchemeUnix))
@@ -553,6 +561,7 @@ var _ = Describe("Config Operations", func() {
 			"enable-multi-network=true",
 			"enable-multi-networkpolicy=true",
 			"enable-interconnect=true",
+			"enable-multi-external-gateway=true",
 			"zone=foo",
 		)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -587,6 +596,8 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Kubernetes.APIServer).To(gomega.Equal("https://1.2.3.4:6443"))
 			gomega.Expect(Kubernetes.RawServiceCIDRs).To(gomega.Equal("172.18.0.0/24"))
 			gomega.Expect(Kubernetes.HealthzBindAddress).To(gomega.Equal("0.0.0.0:1234"))
+			gomega.Expect(Kubernetes.DNSServiceNamespace).To(gomega.Equal("kube-system-f"))
+			gomega.Expect(Kubernetes.DNSServiceName).To(gomega.Equal("kube-dns-f"))
 			gomega.Expect(Default.ClusterSubnets).To(gomega.Equal([]CIDRNetworkEntry{
 				{ovntest.MustParseIPNet("10.132.0.0/14"), 23},
 			}))
@@ -625,12 +636,14 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Gateway.RouterSubnet).To(gomega.Equal("10.50.0.0/16"))
 			gomega.Expect(Gateway.SingleNode).To(gomega.BeFalse())
 			gomega.Expect(Gateway.DisableForwarding).To(gomega.BeTrue())
+			gomega.Expect(Gateway.AllowNoUplink).To(gomega.BeFalse())
 
 			gomega.Expect(HybridOverlay.Enabled).To(gomega.BeTrue())
 			gomega.Expect(OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout).To(gomega.Equal(3))
 			gomega.Expect(OVNKubernetesFeature.EgressIPNodeHealthCheckPort).To(gomega.Equal(1234))
 			gomega.Expect(OVNKubernetesFeature.EnableMultiNetwork).To(gomega.BeTrue())
 			gomega.Expect(OVNKubernetesFeature.EnableInterconnect).To(gomega.BeTrue())
+			gomega.Expect(OVNKubernetesFeature.EnableMultiExternalGateway).To(gomega.BeTrue())
 			gomega.Expect(HybridOverlay.ClusterSubnets).To(gomega.Equal([]CIDRNetworkEntry{
 				{ovntest.MustParseIPNet("11.132.0.0/14"), 23},
 			}))
@@ -678,6 +691,8 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Kubernetes.RawServiceCIDRs).To(gomega.Equal("172.15.0.0/24"))
 			gomega.Expect(Kubernetes.RawNoHostSubnetNodes).To(gomega.Equal("test=pass"))
 			gomega.Expect(Kubernetes.HealthzBindAddress).To(gomega.Equal("0.0.0.0:4321"))
+			gomega.Expect(Kubernetes.DNSServiceNamespace).To(gomega.Equal("kube-system-2"))
+			gomega.Expect(Kubernetes.DNSServiceName).To(gomega.Equal("kube-dns-2"))
 			gomega.Expect(Default.ClusterSubnets).To(gomega.Equal([]CIDRNetworkEntry{
 				{ovntest.MustParseIPNet("10.130.0.0/15"), 24},
 			}))
@@ -713,6 +728,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(Gateway.RouterSubnet).To(gomega.Equal("10.55.0.0/16"))
 			gomega.Expect(Gateway.SingleNode).To(gomega.BeTrue())
 			gomega.Expect(Gateway.DisableForwarding).To(gomega.BeTrue())
+			gomega.Expect(Gateway.AllowNoUplink).To(gomega.BeTrue())
 
 			gomega.Expect(HybridOverlay.Enabled).To(gomega.BeTrue())
 			gomega.Expect(OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout).To(gomega.Equal(5))
@@ -720,6 +736,7 @@ var _ = Describe("Config Operations", func() {
 			gomega.Expect(OVNKubernetesFeature.EnableMultiNetwork).To(gomega.BeTrue())
 			gomega.Expect(OVNKubernetesFeature.EnableMultiNetworkPolicy).To(gomega.BeTrue())
 			gomega.Expect(OVNKubernetesFeature.EnableInterconnect).To(gomega.BeTrue())
+			gomega.Expect(OVNKubernetesFeature.EnableMultiExternalGateway).To(gomega.BeTrue())
 			gomega.Expect(HybridOverlay.ClusterSubnets).To(gomega.Equal([]CIDRNetworkEntry{
 				{ovntest.MustParseIPNet("11.132.0.0/14"), 23},
 			}))
@@ -767,6 +784,7 @@ var _ = Describe("Config Operations", func() {
 			"-gateway-router-subnet=10.55.0.0/16",
 			"-single-node",
 			"-disable-forwarding",
+			"-allow-no-uplink",
 			"-enable-hybrid-overlay",
 			"-hybrid-overlay-cluster-subnets=11.132.0.0/14/23",
 			"-monitor-all=false",
@@ -781,8 +799,11 @@ var _ = Describe("Config Operations", func() {
 			"-enable-multi-network=true",
 			"-enable-multi-networkpolicy=true",
 			"-enable-interconnect=true",
+			"-enable-multi-external-gateway=true",
 			"-healthz-bind-address=0.0.0.0:4321",
 			"-zone=bar",
+			"-dns-service-namespace=kube-system-2",
+			"-dns-service-name=kube-dns-2",
 		}
 		err = app.Run(cliArgs)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())

@@ -3,7 +3,6 @@ package node
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	kapi "k8s.io/api/core/v1"
@@ -11,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni"
@@ -44,11 +42,11 @@ func (bnnc *BaseNodeNetworkController) podReadyToAddDPU(pod *kapi.Pod, nadName s
 	return dpuCD
 }
 
-func (bnnc *BaseNodeNetworkController) addDPUPodForNAD(pod *kapi.Pod, dpuCD *util.DPUConnectionDetails, isOvnUpEnabled bool,
+func (bnnc *BaseNodeNetworkController) addDPUPodForNAD(pod *kapi.Pod, dpuCD *util.DPUConnectionDetails,
 	netName, nadName string, getter cni.PodInfoGetter) error {
 	podDesc := fmt.Sprintf("pod %s/%s for NAD %s", pod.Namespace, pod.Name, nadName)
 	klog.Infof("Adding %s on DPU", podDesc)
-	podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, nil, isOvnUpEnabled,
+	podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, nil,
 		string(pod.UID), "", nadName, netName, config.Default.MTU)
 	if err != nil {
 		return fmt.Errorf("failed to get pod interface information of %s: %v. retrying", podDesc, err)
@@ -134,11 +132,10 @@ func (bnnc *BaseNodeNetworkController) watchPodsDPU() (*factory.Handler, error) 
 				nadToDPUCDMap = map[string]*util.DPUConnectionDetails{types.DefaultNetworkName: nil}
 			}
 
-			isOvnUpEnabled := atomic.LoadInt32(&bnnc.atomicOvnUpEnabled) > 0
 			for nadName := range nadToDPUCDMap {
 				dpuCD := bnnc.podReadyToAddDPU(pod, nadName)
 				if dpuCD != nil {
-					err := bnnc.addDPUPodForNAD(pod, dpuCD, isOvnUpEnabled, netName, nadName, clientSet)
+					err := bnnc.addDPUPodForNAD(pod, dpuCD, netName, nadName, clientSet)
 					if err != nil {
 						klog.Errorf(err.Error())
 					} else {
@@ -177,11 +174,10 @@ func (bnnc *BaseNodeNetworkController) watchPodsDPU() (*factory.Handler, error) 
 					nadToDPUCDMap[nadName] = nil
 				}
 				if newDPUCD != nil {
-					isOvnUpEnabled := atomic.LoadInt32(&bnnc.atomicOvnUpEnabled) > 0
 					klog.Infof("Adding VF during update because either during Pod Add we failed to add VF or "+
 						"connection details weren't present or the VF ID has changed. Old connection details (%v), "+
 						"New connection details (%v)", oldDPUCD, newDPUCD)
-					err := bnnc.addDPUPodForNAD(newPod, newDPUCD, isOvnUpEnabled, netName, nadName, clientSet)
+					err := bnnc.addDPUPodForNAD(newPod, newDPUCD, netName, nadName, clientSet)
 					if err != nil {
 						klog.Errorf(err.Error())
 					} else {
@@ -219,26 +215,18 @@ func (bnnc *BaseNodeNetworkController) updatePodDPUConnStatusWithRetry(origPod *
 	dpuConnStatus *util.DPUConnectionStatus, nadName string) error {
 	podDesc := fmt.Sprintf("pod %s/%s", origPod.Namespace, origPod.Name)
 	klog.Infof("Updating pod %s with connection status (%+v) for NAD %s", podDesc, dpuConnStatus, nadName)
-	resultErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		pod, err := bnnc.watchFactory.GetPod(origPod.Namespace, origPod.Name)
-		if err != nil {
-			return err
-		}
-		// Informer cache should not be mutated, so get a copy of the object
-		cpod := pod.DeepCopy()
-		cpod.Annotations, err = util.MarshalPodDPUConnStatus(cpod.Annotations, dpuConnStatus, nadName)
-		if err != nil {
-			if util.IsAnnotationAlreadySetError(err) {
-				return nil
-			}
-			return err
-		}
-		return bnnc.Kube.UpdatePod(cpod)
-	})
-	if resultErr != nil {
-		return fmt.Errorf("failed to update %s annotation for %s: %v", util.DPUConnetionStatusAnnot, podDesc, resultErr)
+	err := util.UpdatePodDPUConnStatusWithRetry(
+		bnnc.watchFactory.PodCoreInformer().Lister(),
+		bnnc.Kube,
+		origPod,
+		dpuConnStatus,
+		nadName,
+	)
+	if util.IsAnnotationAlreadySetError(err) {
+		return nil
 	}
-	return nil
+
+	return err
 }
 
 // addRepPort adds the representor of the VF to the ovs bridge
@@ -322,7 +310,7 @@ func (bnnc *BaseNodeNetworkController) delRepPort(pod *kapi.Pod, dpuCD *util.DPU
 	}
 
 	// remove from br-int
-	return wait.PollImmediate(500*time.Millisecond, 60*time.Second, func() (bool, error) {
+	return wait.PollUntilContextTimeout(context.Background(), 500*time.Millisecond, 60*time.Second, true, func(ctx context.Context) (bool, error) {
 		_, _, err := util.RunOVSVsctl("--if-exists", "del-port", "br-int", vfRepName)
 		if err != nil {
 			return false, nil

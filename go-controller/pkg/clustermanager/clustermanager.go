@@ -3,8 +3,11 @@ package clustermanager
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/clustermanager/egressservice"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/healthcheck"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -12,7 +15,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
-	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
@@ -31,6 +33,10 @@ type ClusterManager struct {
 	wf                          *factory.WatchFactory
 	wg                          *sync.WaitGroup
 	secondaryNetClusterManager  *secondaryNetworkClusterManager
+	// Controller used for programming node allocation for egress IP
+	// The OVN DB setup is handled by egressIPZoneController that runs in ovnkube-controller
+	eIPC                    *egressIPClusterController
+	egressServiceController *egressservice.Controller
 	// event recorder used to post events to k8s
 	recorder record.EventRecorder
 
@@ -42,8 +48,8 @@ type ClusterManager struct {
 // NewClusterManager creates a new cluster manager to manage the cluster nodes.
 func NewClusterManager(ovnClient *util.OVNClusterManagerClientset, wf *factory.WatchFactory,
 	identity string, wg *sync.WaitGroup, recorder record.EventRecorder) (*ClusterManager, error) {
-	defaultNetClusterController := newNetworkClusterController(ovntypes.DefaultNetworkName, defaultNetworkID, config.Default.ClusterSubnets,
-		ovnClient, wf, config.HybridOverlay.Enabled, &util.DefaultNetInfo{})
+
+	defaultNetClusterController := newDefaultNetworkClusterController(&util.DefaultNetInfo{}, ovnClient, wf)
 
 	zoneClusterController, err := newZoneClusterController(ovnClient, wf)
 	if err != nil {
@@ -62,6 +68,36 @@ func NewClusterManager(ovnClient *util.OVNClusterManagerClientset, wf *factory.W
 
 	if config.OVNKubernetesFeature.EnableMultiNetwork {
 		cm.secondaryNetClusterManager, err = newSecondaryNetworkClusterManager(ovnClient, wf, recorder)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if config.OVNKubernetesFeature.EnableEgressIP {
+		cm.eIPC = newEgressIPController(ovnClient, wf, recorder)
+	}
+
+	if config.OVNKubernetesFeature.EnableEgressService {
+		// TODO: currently an ugly hack to pass the (copied) isReachable func to the egress service controller
+		// without touching the egressIP controller code too much before the Controller object is created.
+		// This will be removed once we consolidate all of the healthchecks to a different place and have
+		// the controllers query a universal cache instead of creating multiple goroutines that do the same thing.
+		timeout := config.OVNKubernetesFeature.EgressIPReachabiltyTotalTimeout
+		hcPort := config.OVNKubernetesFeature.EgressIPNodeHealthCheckPort
+		isReachable := func(nodeName string, mgmtIPs []net.IP, healthClient healthcheck.EgressIPHealthClient) bool {
+			// Check if we need to do node reachability check
+			if timeout == 0 {
+				return true
+			}
+
+			if hcPort == 0 {
+				return isReachableLegacy(nodeName, mgmtIPs, timeout)
+			}
+
+			return isReachableViaGRPC(mgmtIPs, healthClient, hcPort, timeout)
+		}
+
+		cm.egressServiceController, err = egressservice.NewController(ovnClient, wf, isReachable)
 		if err != nil {
 			return nil, err
 		}
@@ -93,6 +129,18 @@ func (cm *ClusterManager) Start(ctx context.Context) error {
 		}
 	}
 
+	if config.OVNKubernetesFeature.EnableEgressIP {
+		if err := cm.eIPC.Start(); err != nil {
+			return err
+		}
+	}
+
+	if config.OVNKubernetesFeature.EnableEgressService {
+		if err := cm.egressServiceController.Start(1); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -103,6 +151,12 @@ func (cm *ClusterManager) Stop() {
 	cm.zoneClusterController.Stop()
 	if config.OVNKubernetesFeature.EnableMultiNetwork {
 		cm.secondaryNetClusterManager.Stop()
+	}
+	if config.OVNKubernetesFeature.EnableEgressIP {
+		cm.eIPC.Stop()
+	}
+	if config.OVNKubernetesFeature.EnableEgressService {
+		cm.egressServiceController.Stop()
 	}
 	metrics.UnregisterClusterManagerFunctional()
 }
